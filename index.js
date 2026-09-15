@@ -4,56 +4,31 @@ const P = require("pino");
 const http = require("http");
 
 const PORT = process.env.PORT || 3000;
+const PHONE_NUMBER = process.env.PHONE_NUMBER;
 
 let pairingCode = "Waiting...";
 let botStatus = "Starting...";
 
-const server = http.createServer((req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/html; charset=utf-8"
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html" });
+
+    res.end(`
+      <html>
+        <body>
+          <h1>WhatsApp AI Bot</h1>
+          <p>Status: ${botStatus}</p>
+          <p>Pairing code: ${pairingCode}</p>
+        </body>
+      </html>
+    `);
+  })
+  .listen(PORT, () => {
+    console.log(`Web server running on port ${PORT}`);
   });
 
-  res.end(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>WhatsApp AI Bot</title>
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          text-align: center;
-          padding: 40px 20px;
-        }
-        .code {
-          font-size: 32px;
-          font-weight: bold;
-          letter-spacing: 5px;
-          margin: 25px 0;
-        }
-      </style>
-    </head>
-    <body>
-      <h1>WhatsApp AI Bot</h1>
-      <p>Status: ${botStatus}</p>
-      <p>Pairing code:</p>
-      <div class="code">${pairingCode}</div>
-      <p>
-        On WhatsApp, go to:<br>
-        <b>Settings → Linked Devices → Link a Device → Link with phone number</b>
-      </p>
-    </body>
-    </html>
-  `);
-});
-
-server.listen(PORT, () => {
-  console.log(`Web server running on port ${PORT}`);
-});
-
 async function startBot() {
-  const { state, saveCreds } =
-    await useMultiFileAuthState("auth_info");
+  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
   const sock = makeWASocket({
     auth: state,
@@ -63,8 +38,20 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", async ({ connection }) => {
+  if (!state.creds.registered && PHONE_NUMBER) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(PHONE_NUMBER);
+        pairingCode = code;
+        botStatus = "Pairing code ready";
+        console.log("Pairing code:", code);
+      } catch (error) {
+        console.error("Pairing code error:", error);
+      }
+    }, 3000);
+  }
 
+  sock.ev.on("connection.update", ({ connection }) => {
     if (connection === "open") {
       botStatus = "WhatsApp connected!";
       console.log("WhatsApp AI Bot is connected!");
