@@ -29,16 +29,8 @@ const server = http.createServer((req, res) => {
 
       <body>
         <h1>WhatsApp AI Bot</h1>
-
-        <p>
-          <strong>Status:</strong>
-          ${botStatus}
-        </p>
-
-        <p>
-          <strong>Pairing code:</strong>
-          ${pairingCode}
-        </p>
+        <p><strong>Status:</strong> ${botStatus}</p>
+        <p><strong>Pairing code:</strong> ${pairingCode}</p>
       </body>
     </html>
   `);
@@ -49,7 +41,7 @@ server.listen(PORT, () => {
 });
 
 /* =========================
-   WHATSAPP BOT
+   START WHATSAPP BOT
    ========================= */
 
 async function startBot() {
@@ -69,11 +61,44 @@ async function startBot() {
   sock.ev.on("creds.update", saveCreds);
 
   /* =========================
-     PAIRING CODE
+     CONNECTION UPDATE
+     ========================= */
+
+  sock.ev.on(
+    "connection.update",
+    async ({
+      connection,
+      lastDisconnect
+    }) => {
+      if (connection === "connecting") {
+        botStatus = "Connecting to WhatsApp...";
+        console.log("Connecting to WhatsApp...");
+      }
+
+      if (connection === "open") {
+        botStatus = "WhatsApp connected!";
+        console.log("WhatsApp AI Bot is connected!");
+      }
+
+      if (connection === "close") {
+        botStatus = "Connection closed";
+
+        console.log(
+          "Connection closed:",
+          lastDisconnect?.error?.message ||
+            lastDisconnect?.error ||
+            "Unknown reason"
+        );
+      }
+    }
+  );
+
+  /* =========================
+     REQUEST PHONE PAIRING CODE
      ========================= */
 
   if (!state.creds.registered && PHONE_NUMBER) {
-    console.log("Waiting to request pairing code...");
+    console.log("Preparing phone-number pairing...");
 
     setTimeout(async () => {
       try {
@@ -91,46 +116,11 @@ async function startBot() {
           error
         );
       }
-    }, 3000);
+    }, 5000);
   }
 
   /* =========================
-     CONNECTION STATUS
-     ========================= */
-
-  sock.ev.on(
-    "connection.update",
-    ({
-      connection,
-      lastDisconnect
-    }) => {
-      if (connection === "connecting") {
-        botStatus = "Connecting to WhatsApp...";
-        console.log("Connecting to WhatsApp...");
-      }
-
-      if (connection === "open") {
-        botStatus = "WhatsApp connected!";
-        console.log(
-          "WhatsApp AI Bot is connected!"
-        );
-      }
-
-      if (connection === "close") {
-        botStatus = "Connection closed";
-
-        console.log(
-          "Connection closed:",
-          lastDisconnect?.error?.message ||
-            lastDisconnect?.error ||
-            "Unknown reason"
-        );
-      }
-    }
-  );
-
-  /* =========================
-     RECEIVE MESSAGES
+     RECEIVE WHATSAPP MESSAGES
      ========================= */
 
   sock.ev.on(
@@ -139,38 +129,25 @@ async function startBot() {
       try {
         const message = messages[0];
 
-        if (!message) {
-          return;
-        }
-
-        if (!message.message) {
-          return;
-        }
-
-        if (message.key.fromMe) {
-          return;
-        }
+        if (!message) return;
+        if (!message.message) return;
+        if (message.key.fromMe) return;
 
         const text =
           message.message.conversation ||
           message.message.extendedTextMessage?.text ||
           "";
 
-        if (!text) {
-          return;
-        }
+        if (!text) return;
 
-        console.log(
-          "Message received:",
-          text
-        );
-
-        /* =========================
-           SIMPLE AI BOT RESPONSES
-           ========================= */
+        console.log("Message received:", text);
 
         const lowerText =
           text.toLowerCase().trim();
+
+        /* =========================
+           HELLO
+           ========================= */
 
         if (lowerText === "hello") {
           await sock.sendMessage(
@@ -184,6 +161,10 @@ async function startBot() {
           return;
         }
 
+        /* =========================
+           HI
+           ========================= */
+
         if (lowerText === "hi") {
           await sock.sendMessage(
             message.key.remoteJid,
@@ -195,6 +176,10 @@ async function startBot() {
 
           return;
         }
+
+        /* =========================
+           HELP
+           ========================= */
 
         if (lowerText === "help") {
           await sock.sendMessage(
@@ -231,7 +216,7 @@ async function startBot() {
 }
 
 /* =========================
-   START BOT
+   START THE BOT
    ========================= */
 
 startBot().catch((error) => {
@@ -239,4 +224,4 @@ startBot().catch((error) => {
     "Bot startup error:",
     error
   );
-});  
+});
