@@ -1,6 +1,19 @@
-const { default: makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState } =
+  require("@whiskeysockets/baileys");
 const P = require("pino");
 const qrcode = require("qrcode-terminal");
+const http = require("http");
+
+const PORT = process.env.PORT || 3000;
+
+http
+  .createServer((req, res) => {
+    res.writeHead(200);
+    res.end("WhatsApp AI Bot is running");
+  })
+  .listen(PORT, () => {
+    console.log(`Web server running on port ${PORT}`);
+  });
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -24,7 +37,7 @@ async function startBot() {
     }
 
     if (connection === "close") {
-      console.log("Connection closed. Restart the bot.");
+      console.log("Connection closed.");
     }
   });
 
