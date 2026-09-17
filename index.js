@@ -40,7 +40,10 @@ async function sendWhatsAppMessage(to, text) {
 
   const data = await response.json();
 
-  console.log("WhatsApp API response:", JSON.stringify(data, null, 2));
+  console.log(
+    "WhatsApp API response:",
+    JSON.stringify(data, null, 2)
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -110,7 +113,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && req.url.startsWith("/webhook")) {
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    const url = new URL(
+      req.url,
+      `http://${req.headers.host}`
+    );
 
     const mode = url.searchParams.get("hub.mode");
     const token = url.searchParams.get("hub.verify_token");
@@ -160,7 +166,9 @@ const server = http.createServer(async (req, res) => {
           data.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
         if (!message) {
-          console.log("NO MESSAGE FOUND - probably a status/event");
+          console.log(
+            "NO MESSAGE FOUND - probably a status/event"
+          );
 
           res.writeHead(200);
           res.end("EVENT_RECEIVED");
@@ -173,7 +181,10 @@ const server = http.createServer(async (req, res) => {
         );
 
         if (message.type !== "text") {
-          console.log("Message is not text:", message.type);
+          console.log(
+            "Message is not text:",
+            message.type
+          );
 
           res.writeHead(200);
           res.end("EVENT_RECEIVED");
@@ -184,15 +195,24 @@ const server = http.createServer(async (req, res) => {
         const text = message.text?.body;
 
         if (!from || !text) {
-          console.log("Missing sender or message text");
+          console.log(
+            "Missing sender or message text"
+          );
 
           res.writeHead(200);
           res.end("EVENT_RECEIVED");
           return;
         }
 
-        console.log("Incoming WhatsApp message:", text);
-        console.log("Sender:", from);
+        console.log(
+          "Incoming WhatsApp message:",
+          text
+        );
+
+        console.log(
+          "Sender:",
+          from
+        );
 
         /*
          * Tell Meta we received the webhook.
@@ -211,7 +231,9 @@ const server = http.createServer(async (req, res) => {
             aiReply
           );
 
-          console.log("STEP 6: Reply sent successfully!");
+          console.log(
+            "STEP 6: Reply sent successfully!"
+          );
 
         } catch (processingError) {
 
