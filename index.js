@@ -13,10 +13,12 @@ const openai = new OpenAI({
 });
 
 /* =========================
-   SEND MESSAGE TO WHATSAPP
+   SEND WHATSAPP MESSAGE
    ========================= */
 
 async function sendWhatsAppMessage(to, text) {
+  console.log("STEP 5: Sending WhatsApp reply...");
+
   const url =
     `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
 
@@ -38,9 +40,12 @@ async function sendWhatsAppMessage(to, text) {
 
   const data = await response.json();
 
+  console.log("WhatsApp API response:", JSON.stringify(data, null, 2));
+
   if (!response.ok) {
-    console.error("WhatsApp API error:", data);
-    throw new Error("WhatsApp API request failed");
+    throw new Error(
+      `WhatsApp API failed: ${JSON.stringify(data)}`
+    );
   }
 
   return data;
@@ -51,6 +56,8 @@ async function sendWhatsAppMessage(to, text) {
    ========================= */
 
 async function askOpenAI(message) {
+  console.log("STEP 4: Sending message to OpenAI...");
+
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
@@ -66,7 +73,15 @@ async function askOpenAI(message) {
     ]
   });
 
-  return completion.choices[0].message.content;
+  const reply = completion.choices[0]?.message?.content;
+
+  console.log("OpenAI reply:", reply);
+
+  if (!reply) {
+    throw new Error("OpenAI returned an empty reply");
+  }
+
+  return reply;
 }
 
 /* =========================
@@ -75,9 +90,7 @@ async function askOpenAI(message) {
 
 const server = http.createServer(async (req, res) => {
 
-  /* =========================
-     HEALTH CHECK
-     ========================= */
+  /* HEALTH CHECK */
 
   if (req.method === "GET" && req.url === "/") {
     res.writeHead(200, {
@@ -85,26 +98,15 @@ const server = http.createServer(async (req, res) => {
     });
 
     res.end(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>WhatsApp AI Bot</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-        </head>
-        <body>
-          <h1>WhatsApp AI Bot</h1>
-          <p>Status: Online</p>
-          <p>WhatsApp Cloud API: Ready</p>
-        </body>
-      </html>
+      <h1>The Silent Strategist AI</h1>
+      <p>Status: Online</p>
+      <p>WhatsApp Cloud API: Ready</p>
     `);
 
     return;
   }
 
-  /* =========================
-     META WEBHOOK VERIFICATION
-     ========================= */
+  /* META WEBHOOK VERIFICATION */
 
   if (req.method === "GET" && req.url.startsWith("/webhook")) {
 
@@ -117,10 +119,7 @@ const server = http.createServer(async (req, res) => {
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       console.log("Webhook verified successfully.");
 
-      res.writeHead(200, {
-        "Content-Type": "text/plain"
-      });
-
+      res.writeHead(200);
       res.end(challenge);
 
       return;
@@ -132,11 +131,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  /* =========================
-     RECEIVE WHATSAPP WEBHOOK
-     ========================= */
+  /* RECEIVE WHATSAPP WEBHOOK */
 
   if (req.method === "POST" && req.url === "/webhook") {
+
+    console.log("STEP 1: POST /webhook received");
 
     let body = "";
 
@@ -147,10 +146,13 @@ const server = http.createServer(async (req, res) => {
     req.on("end", async () => {
 
       try {
+
+        console.log("STEP 2: Request body received");
+
         const data = JSON.parse(body);
 
         console.log(
-          "Webhook received:",
+          "Webhook data:",
           JSON.stringify(data, null, 2)
         );
 
@@ -158,12 +160,21 @@ const server = http.createServer(async (req, res) => {
           data.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
         if (!message) {
+          console.log("NO MESSAGE FOUND - probably a status/event");
+
           res.writeHead(200);
           res.end("EVENT_RECEIVED");
           return;
         }
 
+        console.log(
+          "STEP 3: Message found:",
+          JSON.stringify(message, null, 2)
+        );
+
         if (message.type !== "text") {
+          console.log("Message is not text:", message.type);
+
           res.writeHead(200);
           res.end("EVENT_RECEIVED");
           return;
@@ -173,44 +184,54 @@ const server = http.createServer(async (req, res) => {
         const text = message.text?.body;
 
         if (!from || !text) {
+          console.log("Missing sender or message text");
+
           res.writeHead(200);
           res.end("EVENT_RECEIVED");
           return;
         }
 
-        console.log("WhatsApp message:", text);
+        console.log("Incoming WhatsApp message:", text);
+        console.log("Sender:", from);
 
-        /* =========================
-           ASK OPENAI
-           ========================= */
-
-        const aiReply = await askOpenAI(text);
-
-        console.log("AI reply:", aiReply);
-
-        /* =========================
-           SEND RESPONSE
-           ========================= */
-
-        await sendWhatsAppMessage(
-          from,
-          aiReply
-        );
-
-        console.log("Reply sent successfully.");
+        /*
+         * Tell Meta we received the webhook.
+         * Then continue processing the AI reply.
+         */
 
         res.writeHead(200);
         res.end("EVENT_RECEIVED");
+
+        try {
+
+          const aiReply = await askOpenAI(text);
+
+          await sendWhatsAppMessage(
+            from,
+            aiReply
+          );
+
+          console.log("STEP 6: Reply sent successfully!");
+
+        } catch (processingError) {
+
+          console.error(
+            "PROCESSING ERROR:",
+            processingError
+          );
+        }
 
       } catch (error) {
 
         console.error(
-          "Webhook processing error:",
+          "WEBHOOK ERROR:",
           error
         );
 
-        res.writeHead(200);
-        res.end("EVENT_RECEIVED");
+        if (!res.headersSent) {
+          res.writeHead(200);
+          res.end("EVENT_RECEIVED");
+        }
       }
     });
 
@@ -227,6 +248,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(
-    `WhatsApp AI Bot running on port ${PORT}`
+    `The Silent Strategist AI running on port ${PORT}`
   );
 });
