@@ -2,28 +2,18 @@ const http = require("http");
 const OpenAI = require("openai");
 
 const PORT = process.env.PORT || 3000;
-
 const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-/*
- * =========================================================
- * OPENAI CLIENT
- * =========================================================
- */
-
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY
 });
 
-
-/*
- * =========================================================
- * SILENT STRATEGIST POLICY
- * =========================================================
- */
+/* =========================================================
+   SILENT STRATEGIST POLICY
+   ========================================================= */
 
 const POLICY = {
   name: "Silent Strategist Core Policy",
@@ -46,17 +36,9 @@ const POLICY = {
 };
 
 
-/*
- * =========================================================
- * AI CAPABILITY REGISTRY
- *
- * This is the beginning of your AI control/orchestration
- * layer.
- *
- * The Silent Strategist does NOT assume every AI is available.
- * A capability must first be registered and authorized.
- * =========================================================
- */
+/* =========================================================
+   AI CAPABILITY REGISTRY
+   ========================================================= */
 
 const AI_CAPABILITIES = {
 
@@ -74,7 +56,9 @@ const AI_CAPABILITIES = {
         name: "OpenAI",
         type: "openai",
         enabled: true,
-        model: process.env.OPENAI_REASONING_MODEL || "gpt-4o-mini",
+        model:
+          process.env.OPENAI_REASONING_MODEL ||
+          "gpt-4o-mini",
         priority: 1
       }
     ]
@@ -127,41 +111,73 @@ const AI_CAPABILITIES = {
 };
 
 
-/*
- * =========================================================
- * PROVIDER REGISTRY
- * =========================================================
- */
+/* =========================================================
+   AUDIT LOG
+   ========================================================= */
 
-function getAvailableProviders(capabilityId) {
+const auditLog = [];
+
+function recordAuditEvent(event) {
+
+  const auditEvent = {
+    timestamp: new Date().toISOString(),
+    ...event
+  };
+
+  auditLog.push(auditEvent);
+
+  console.log(
+    "AUDIT LOG:",
+    JSON.stringify(
+      auditEvent,
+      null,
+      2
+    )
+  );
+
+  /*
+   * Temporary development limit.
+   * Persistent audit storage will be added later.
+   */
+
+  if (auditLog.length > 1000) {
+    auditLog.shift();
+  }
+}
+
+
+/* =========================================================
+   PROVIDER REGISTRY
+   ========================================================= */
+
+function getAvailableProviders(
+  capabilityId
+) {
 
   const capability =
     AI_CAPABILITIES[capabilityId];
 
-  if (!capability) {
-    return [];
-  }
-
-  if (!capability.enabled) {
+  if (
+    !capability ||
+    !capability.enabled
+  ) {
     return [];
   }
 
   return capability.providers
-    .filter(provider => provider.enabled)
-    .sort((a, b) => a.priority - b.priority);
+    .filter(
+      provider => provider.enabled
+    )
+    .sort(
+      (a, b) =>
+        a.priority - b.priority
+    );
 }
 
 
-/*
- * =========================================================
- * TASK CLASSIFIER
- *
- * First version uses transparent rules.
- *
- * Later this can itself become an AI-assisted classifier,
- * but the policy engine remains in control.
- * =========================================================
- */
+/* =========================================================
+   TASK CLASSIFIER
+   ========================================================= */
 
 function classifyTask(message) {
 
@@ -173,11 +189,10 @@ function classifyTask(message) {
     message.toLowerCase().trim();
 
 
-  /*
-   * IMAGE
-   */
+  /* IMAGE */
 
   const imageKeywords = [
+
     "create an image",
     "generate an image",
     "make an image",
@@ -187,54 +202,58 @@ function classifyTask(message) {
     "draw a picture",
     "edit this image",
     "modify this image"
+
   ];
 
   if (
     imageKeywords.some(
-      keyword => text.includes(keyword)
+      keyword =>
+        text.includes(keyword)
     )
   ) {
 
     return {
       capability: "image",
       confidence: 0.95,
-      reason: "Image-related instruction detected."
+      reason:
+        "Image-related instruction detected."
     };
   }
 
 
-  /*
-   * SPEECH
-   */
+  /* SPEECH */
 
   const speechKeywords = [
+
     "transcribe",
     "transcription",
     "voice recording",
     "audio recording",
     "convert speech",
     "read this aloud"
+
   ];
 
   if (
     speechKeywords.some(
-      keyword => text.includes(keyword)
+      keyword =>
+        text.includes(keyword)
     )
   ) {
 
     return {
       capability: "speech",
       confidence: 0.90,
-      reason: "Speech/audio instruction detected."
+      reason:
+        "Speech/audio instruction detected."
     };
   }
 
 
-  /*
-   * CODING
-   */
+  /* CODING */
 
   const codingKeywords = [
+
     "write code",
     "write a program",
     "debug this code",
@@ -245,27 +264,29 @@ function classifyTask(message) {
     "nodejs",
     "api code",
     "programming"
+
   ];
 
   if (
     codingKeywords.some(
-      keyword => text.includes(keyword)
+      keyword =>
+        text.includes(keyword)
     )
   ) {
 
     return {
       capability: "coding",
       confidence: 0.90,
-      reason: "Coding-related instruction detected."
+      reason:
+        "Coding-related instruction detected."
     };
   }
 
 
-  /*
-   * RESEARCH
-   */
+  /* RESEARCH */
 
   const researchKeywords = [
+
     "research",
     "latest information",
     "look up",
@@ -273,42 +294,39 @@ function classifyTask(message) {
     "find information",
     "what happened today",
     "current information"
+
   ];
 
   if (
     researchKeywords.some(
-      keyword => text.includes(keyword)
+      keyword =>
+        text.includes(keyword)
     )
   ) {
 
     return {
       capability: "research",
       confidence: 0.90,
-      reason: "Research-related instruction detected."
+      reason:
+        "Research-related instruction detected."
     };
   }
 
 
-  /*
-   * DEFAULT
-   *
-   * Most normal WhatsApp questions currently go to
-   * reasoning.
-   */
+  /* DEFAULT */
 
   return {
     capability: "reasoning",
     confidence: 0.75,
-    reason: "General reasoning/conversation task."
+    reason:
+      "General reasoning/conversation task."
   };
 }
 
 
-/*
- * =========================================================
- * POLICY / SAFETY ENGINE
- * =========================================================
- */
+/* =========================================================
+   POLICY / SAFETY ENGINE
+   ========================================================= */
 
 function evaluatePolicy(message) {
 
@@ -325,47 +343,37 @@ function evaluatePolicy(message) {
       allowed: false,
       riskLevel: "HIGH",
       requiresHumanApproval: true,
-      reason: "Invalid or missing message."
+      reason:
+        "Invalid or missing message."
     };
   }
 
-  const trimmedMessage =
-    message.trim();
-
-  if (!trimmedMessage) {
+  if (!message.trim()) {
 
     return {
       allowed: false,
       riskLevel: "HIGH",
       requiresHumanApproval: true,
-      reason: "Empty message."
+      reason:
+        "Empty message."
     };
   }
-
-
-  /*
-   * IMPORTANT:
-   *
-   * At this stage the system is providing information.
-   * It does not have permission to perform external
-   * actions simply because a user asks.
-   */
 
   return {
     allowed: true,
     riskLevel: "LOW",
     requiresHumanApproval: false,
-    reason: "Informational AI response permitted.",
-    policyVersion: POLICY.version
+    reason:
+      "Informational AI response permitted.",
+    policyVersion:
+      POLICY.version
   };
 }
 
 
-/*
- * =========================================================
- * PROVIDER ROUTER
- * =========================================================
- */
+/* =========================================================
+   AI ROUTER
+   ========================================================= */
 
 function routeTask(classification) {
 
@@ -378,7 +386,6 @@ function routeTask(classification) {
       classification.capability
     ];
 
-
   if (!capability) {
 
     return {
@@ -387,7 +394,6 @@ function routeTask(classification) {
         "Requested capability is not registered."
     };
   }
-
 
   if (!capability.enabled) {
 
@@ -398,12 +404,10 @@ function routeTask(classification) {
     };
   }
 
-
   const providers =
     getAvailableProviders(
       classification.capability
     );
-
 
   if (providers.length === 0) {
 
@@ -413,14 +417,6 @@ function routeTask(classification) {
         `No authorized provider is currently available for ${capability.name}.`
     };
   }
-
-
-  const primary =
-    providers[0];
-
-  const fallback =
-    providers[1] || null;
-
 
   return {
 
@@ -433,24 +429,17 @@ function routeTask(classification) {
       capability.name,
 
     primaryProvider:
-      primary,
+      providers[0],
 
     fallbackProvider:
-      fallback
+      providers[1] || null
   };
 }
 
 
-/*
- * =========================================================
- * OPENAI PROVIDER ADAPTER
- *
- * The rest of Silent Strategist does not need to know
- * how OpenAI works internally.
- *
- * This is the important architectural separation.
- * =========================================================
- */
+/* =========================================================
+   OPENAI PROVIDER ADAPTER
+   ========================================================= */
 
 async function openAIReasoningAdapter(
   message,
@@ -465,11 +454,11 @@ async function openAIReasoningAdapter(
     `MODEL: ${provider.model}`
   );
 
-
   const completion =
     await openai.chat.completions.create({
 
-      model: provider.model,
+      model:
+        provider.model,
 
       messages: [
 
@@ -495,7 +484,7 @@ Your responsibilities:
 7. Do not treat your own recommendation as human authorization.
 8. Important external actions require authorization outside the model.
 
-The Silent Strategist policy version is:
+Silent Strategist policy version:
 ${POLICY.version}
           `
         },
@@ -525,19 +514,25 @@ ${POLICY.version}
 
 
   return {
+
     reply,
-    provider: provider.id,
-    providerName: provider.name,
-    model: provider.model
+
+    provider:
+      provider.id,
+
+    providerName:
+      provider.name,
+
+    model:
+      provider.model
+
   };
 }
 
 
-/*
- * =========================================================
- * PROVIDER ADAPTER DISPATCHER
- * =========================================================
- */
+/* =========================================================
+   PROVIDER ADAPTER DISPATCHER
+   ========================================================= */
 
 async function executeProvider(
   message,
@@ -548,12 +543,11 @@ async function executeProvider(
     provider.type === "openai"
   ) {
 
-    return await openAIReasoningAdapter(
+    return openAIReasoningAdapter(
       message,
       provider
     );
   }
-
 
   throw new Error(
     `No adapter exists for provider type: ${provider.type}`
@@ -561,23 +555,16 @@ async function executeProvider(
 }
 
 
-/*
- * =========================================================
- * AI ORCHESTRATOR
- *
- * This is the central brain of the architecture.
- * =========================================================
- */
+/* =========================================================
+   AI ORCHESTRATOR
+   ========================================================= */
 
 async function orchestrateAI(
   message,
   sender
 ) {
 
-  /*
-   * STEP A
-   * Classify task
-   */
+  /* CLASSIFY */
 
   const classification =
     classifyTask(message);
@@ -591,16 +578,16 @@ async function orchestrateAI(
     sender,
 
     classification
+
   });
 
 
-  /*
-   * STEP B
-   * Route task
-   */
+  /* ROUTE */
 
   const route =
-    routeTask(classification);
+    routeTask(
+      classification
+    );
 
 
   recordAuditEvent({
@@ -629,13 +616,11 @@ async function orchestrateAI(
 
       reason:
         route.reason
+
     }
+
   });
 
-
-  /*
-   * No provider available.
-   */
 
   if (!route.routed) {
 
@@ -646,10 +631,7 @@ async function orchestrateAI(
   }
 
 
-  /*
-   * STEP C
-   * Try primary provider
-   */
+  /* PRIMARY PROVIDER */
 
   try {
 
@@ -680,10 +662,12 @@ async function orchestrateAI(
 
       model:
         route.primaryProvider.model
+
     });
 
 
     return result;
+
 
   } catch (primaryError) {
 
@@ -708,26 +692,26 @@ async function orchestrateAI(
 
       error:
         primaryError.message
+
     });
 
 
-    /*
-     * STEP D
-     * Fallback provider
-     */
+    /* FALLBACK */
 
-    if (!route.fallbackProvider) {
+    if (
+      !route.fallbackProvider
+    ) {
 
       throw primaryError;
     }
 
 
-    console.log(
-      `ORCHESTRATOR: Attempting fallback provider ${route.fallbackProvider.id}`
-    );
-
-
     try {
+
+      console.log(
+        `ORCHESTRATOR: Attempting fallback provider ${route.fallbackProvider.id}`
+      );
+
 
       const fallbackResult =
         await executeProvider(
@@ -751,10 +735,12 @@ async function orchestrateAI(
 
         model:
           route.fallbackProvider.model
+
       });
 
 
       return fallbackResult;
+
 
     } catch (fallbackError) {
 
@@ -773,6 +759,7 @@ async function orchestrateAI(
 
         error:
           fallbackError.message
+
       });
 
 
@@ -782,11 +769,9 @@ async function orchestrateAI(
 }
 
 
-/*
- * =========================================================
- * RESPONSE VERIFICATION
- * =========================================================
- */
+/* =========================================================
+   RESPONSE VERIFICATION
+   ========================================================= */
 
 function verifyAIResponse(
   reply
@@ -808,16 +793,10 @@ function verifyAIResponse(
 
       reason:
         "AI returned an empty or invalid response."
+
     };
   }
 
-
-  /*
-   * Basic verification for now.
-   *
-   * Later this becomes a dedicated verification engine
-   * with additional checks and independent validators.
-   */
 
   return {
 
@@ -825,68 +804,14 @@ function verifyAIResponse(
 
     reason:
       "AI response passed basic verification."
+
   };
 }
 
 
-/*
- * =========================================================
- * AUDIT LOG
- * =========================================================
- */
-
-const auditLog = [];
-
-
-function recordAuditEvent(
-  event
-) {
-
-  const auditEvent = {
-
-    timestamp:
-      new Date().toISOString(),
-
-    ...event
-  };
-
-
-  auditLog.push(
-    auditEvent
-  );
-
-
-  console.log(
-    "AUDIT LOG:",
-    JSON.stringify(
-      auditEvent,
-      null,
-      2
-    )
-  );
-
-
-  /*
-   * Development memory limit.
-   *
-   * This is NOT yet permanent storage.
-   * Persistent audit storage is a later governance step.
-   */
-
-  if (
-    auditLog.length > 1000
-  ) {
-
-    auditLog.shift();
-  }
-}
-
-
-/*
- * =========================================================
- * SEND WHATSAPP MESSAGE
- * =========================================================
- */
+/* =========================================================
+   WHATSAPP SENDER
+   ========================================================= */
 
 async function sendWhatsAppMessage(
   to,
@@ -911,11 +836,12 @@ async function sendWhatsAppMessage(
 
         headers: {
 
-          "Authorization":
+          Authorization:
             `Bearer ${WHATSAPP_TOKEN}`,
 
           "Content-Type":
             "application/json"
+
         },
 
         body:
@@ -930,11 +856,11 @@ async function sendWhatsAppMessage(
               "text",
 
             text: {
-
-              body:
-                text
+              body: text
             }
+
           })
+
       }
     );
 
@@ -965,11 +891,9 @@ async function sendWhatsAppMessage(
 }
 
 
-/*
- * =========================================================
- * COMPLETE SILENT STRATEGIST PIPELINE
- * =========================================================
- */
+/* =========================================================
+   COMPLETE SILENT STRATEGIST PIPELINE
+   ========================================================= */
 
 async function processMessage(
   from,
@@ -989,10 +913,7 @@ async function processMessage(
   );
 
 
-  /*
-   * STEP 1
-   * Policy
-   */
+  /* POLICY */
 
   const policyResult =
     evaluatePolicy(text);
@@ -1010,6 +931,7 @@ async function processMessage(
       text,
 
     policyResult
+
   });
 
 
@@ -1027,17 +949,14 @@ async function processMessage(
 
       reason:
         policyResult.reason
-    });
 
+    });
 
     return;
   }
 
 
-  /*
-   * STEP 2
-   * AI ORCHESTRATION
-   */
+  /* ORCHESTRATION */
 
   const aiResult =
     await orchestrateAI(
@@ -1046,10 +965,7 @@ async function processMessage(
     );
 
 
-  /*
-   * STEP 3
-   * Verify response
-   */
+  /* VERIFICATION */
 
   const verification =
     verifyAIResponse(
@@ -1069,13 +985,9 @@ async function processMessage(
       aiResult.provider,
 
     verification
+
   });
 
-
-  /*
-   * STEP 4
-   * Block failed verification
-   */
 
   if (
     !verification.verified
@@ -1091,17 +1003,14 @@ async function processMessage(
 
       reason:
         verification.reason
-    });
 
+    });
 
     return;
   }
 
 
-  /*
-   * STEP 5
-   * Record approved response
-   */
+  /* APPROVAL */
 
   recordAuditEvent({
 
@@ -1112,7 +1021,7 @@ async function processMessage(
       from,
 
     capability:
-      aiResult.provider,
+      "reasoning",
 
     provider:
       aiResult.provider,
@@ -1125,13 +1034,11 @@ async function processMessage(
 
     response:
       aiResult.reply
+
   });
 
 
-  /*
-   * STEP 6
-   * Send response
-   */
+  /* SEND */
 
   await sendWhatsAppMessage(
     from,
@@ -1139,10 +1046,7 @@ async function processMessage(
   );
 
 
-  /*
-   * STEP 7
-   * Audit successful action
-   */
+  /* AUDIT */
 
   recordAuditEvent({
 
@@ -1157,6 +1061,7 @@ async function processMessage(
 
     status:
       "SUCCESS"
+
   });
 
 
@@ -1174,34 +1079,74 @@ async function processMessage(
 }
 
 
-/*
- * =========================================================
- * WEB SERVER
- * =========================================================
- */
+/* =========================================================
+   PUBLIC CAPABILITY STATUS
+   ========================================================= */
+
+function getPublicCapabilities() {
+
+  return Object.values(
+    AI_CAPABILITIES
+  ).map(
+    capability => ({
+
+      id:
+        capability.id,
+
+      name:
+        capability.name,
+
+      description:
+        capability.description,
+
+      enabled:
+        capability.enabled,
+
+      providers:
+        capability.providers.map(
+          provider => ({
+
+            id:
+              provider.id,
+
+            name:
+              provider.name,
+
+            type:
+              provider.type,
+
+            enabled:
+              provider.enabled,
+
+            model:
+              provider.model,
+
+            priority:
+              provider.priority
+
+          })
+        )
+
+    })
+  );
+}
+
+
+/* =========================================================
+   WEB SERVER
+   ========================================================= */
 
 const server =
   http.createServer(
-    async (req, res) => {
+    (req, res) => {
 
 
-      /*
-       * HEALTH CHECK
-       */
+      /* HEALTH CHECK */
 
       if (
         req.method === "GET" &&
         req.url === "/"
       ) {
-
-        res.writeHead(
-          200,
-          {
-            "Content-Type":
-              "text/html; charset=utf-8"
-          }
-        );
-
 
         const capabilityStatus =
           Object.values(
@@ -1218,7 +1163,17 @@ const server =
             .join("");
 
 
+        res.writeHead(
+          200,
+          {
+            "Content-Type":
+              "text/html; charset=utf-8"
+          }
+        );
+
+
         res.end(`
+
           <h1>The Silent Strategist AI</h1>
 
           <p>Status: Online</p>
@@ -1239,36 +1194,98 @@ const server =
 
           <p>Audit Logging: Active</p>
 
-          <p>Policy Version: ${POLICY.version}</p>
+          <p>
+            Policy Version:
+            ${POLICY.version}
+          </p>
 
           <h2>AI Capabilities</h2>
 
           <ul>
             ${capabilityStatus}
           </ul>
+
         `);
 
         return;
       }
 
 
-      /*
-       * =====================================================
-       * CAPABILITY STATUS
-       *
-       * This endpoint is informational only.
-       * It does not grant permissions or execute actions.
-       * =====================================================
-       */
+      /* CAPABILITY STATUS */
 
       if (
         req.method === "GET" &&
         req.url === "/capabilities"
       ) {
 
-        const publicCapabilities =
-          Object.values(
-            AI_CAPABILITIES
+        res.writeHead(
+          200,
+          {
+            "Content-Type":
+              "application/json"
+          }
+        );
+
+
+        res.end(
+          JSON.stringify(
+            {
+
+              policyVersion:
+                POLICY.version,
+
+              capabilities:
+                getPublicCapabilities()
+
+            },
+
+            null,
+            2
           )
-            .map(
-  
+        );
+
+        return;
+      }
+
+
+      /* META WEBHOOK VERIFICATION */
+
+      if (
+        req.method === "GET" &&
+        req.url.startsWith(
+          "/webhook"
+        )
+      ) {
+
+        const url =
+          new URL(
+            req.url,
+            `http://${req.headers.host}`
+          );
+
+
+        const mode =
+          url.searchParams.get(
+            "hub.mode"
+          );
+
+
+        const token =
+          url.searchParams.get(
+            "hub.verify_token"
+          );
+
+
+        const challenge =
+          url.searchParams.get(
+            "hub.challenge"
+          );
+
+
+        if (
+          mode === "subscribe" &&
+          token === VERIFY_TOKEN
+        ) {
+
+          console.log(
+            "Webh
