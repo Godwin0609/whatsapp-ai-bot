@@ -11,6 +11,7 @@ const openai = new OpenAI({
   apiKey: OPENAI_API_KEY
 });
 
+
 /* =========================================================
    SILENT STRATEGIST POLICY
    ========================================================= */
@@ -44,7 +45,9 @@ const AI_CAPABILITIES = {
 
   reasoning: {
     id: "reasoning",
+
     name: "Reasoning",
+
     description:
       "General reasoning, analysis, planning and conversation.",
 
@@ -53,20 +56,28 @@ const AI_CAPABILITIES = {
     providers: [
       {
         id: "openai-primary",
+
         name: "OpenAI",
+
         type: "openai",
+
         enabled: true,
+
         model:
           process.env.OPENAI_REASONING_MODEL ||
           "gpt-4o-mini",
+
         priority: 1
       }
     ]
   },
 
+
   image: {
     id: "image",
+
     name: "Image Generation",
+
     description:
       "Generate or transform images.",
 
@@ -75,9 +86,12 @@ const AI_CAPABILITIES = {
     providers: []
   },
 
+
   speech: {
     id: "speech",
+
     name: "Speech",
+
     description:
       "Speech recognition and speech generation.",
 
@@ -86,9 +100,12 @@ const AI_CAPABILITIES = {
     providers: []
   },
 
+
   coding: {
     id: "coding",
+
     name: "Coding",
+
     description:
       "Software development and code analysis.",
 
@@ -97,9 +114,12 @@ const AI_CAPABILITIES = {
     providers: []
   },
 
+
   research: {
     id: "research",
+
     name: "Research",
+
     description:
       "Research and information retrieval.",
 
@@ -116,6 +136,7 @@ const AI_CAPABILITIES = {
    ========================================================= */
 
 const auditLog = [];
+
 
 function recordAuditEvent(event) {
 
@@ -147,6 +168,278 @@ function recordAuditEvent(event) {
 
 
 /* =========================================================
+   SYSTEM CONTROL / EMERGENCY STOP
+   ========================================================= */
+
+const SYSTEM_STATE = {
+
+  emergencyStop: false,
+
+  version: "1.0.0"
+
+};
+
+
+/* =========================================================
+   PHONE NUMBER NORMALIZATION
+   ========================================================= */
+
+function normalizePhone(value) {
+
+  return String(value || "")
+    .replace(/\D/g, "");
+
+}
+
+
+/* =========================================================
+   ADMIN AUTHORIZATION
+   ========================================================= */
+
+function isAdmin(sender) {
+
+  const adminNumber =
+    process.env.ADMIN_PHONE_NUMBER;
+
+  if (!adminNumber) {
+    return false;
+  }
+
+  return (
+    normalizePhone(sender) ===
+    normalizePhone(adminNumber)
+  );
+
+}
+
+
+/* =========================================================
+   EMERGENCY STOP CONTROL
+   ========================================================= */
+
+function setEmergencyStop(
+  enabled,
+  actor
+) {
+
+  SYSTEM_STATE.emergencyStop =
+    enabled;
+
+  recordAuditEvent({
+
+    type:
+      enabled
+        ? "EMERGENCY_STOP_ENABLED"
+        : "EMERGENCY_STOP_DISABLED",
+
+    actor,
+
+    emergencyStop:
+      SYSTEM_STATE.emergencyStop
+
+  });
+
+  console.log(
+    enabled
+      ? "EMERGENCY STOP: ENABLED"
+      : "EMERGENCY STOP: DISABLED"
+  );
+
+}
+
+
+/* =========================================================
+   SYSTEM STATUS
+   ========================================================= */
+
+function getSystemStatus() {
+
+  return {
+
+    emergencyStop:
+      SYSTEM_STATE.emergencyStop,
+
+    systemStatus:
+      SYSTEM_STATE.emergencyStop
+        ? "STOPPED"
+        : "RUNNING",
+
+    policyVersion:
+      POLICY.version,
+
+    adminControlConfigured:
+      Boolean(
+        process.env.ADMIN_PHONE_NUMBER
+      )
+
+  };
+
+}
+
+
+/* =========================================================
+   ADMIN CONTROL COMMANDS
+   ========================================================= */
+
+async function handleControlCommand(
+  sender,
+  text
+) {
+
+  const command =
+    String(text || "")
+      .trim()
+      .toUpperCase();
+
+
+  const validCommands = [
+    "STOP",
+    "RESUME",
+    "STATUS"
+  ];
+
+
+  /*
+   * If this is not a control command,
+   * allow normal AI processing.
+   */
+
+  if (
+    !validCommands.includes(
+      command
+    )
+  ) {
+
+    return {
+      handled: false
+    };
+
+  }
+
+
+  /*
+   * Control commands require
+   * the authorized administrator.
+   */
+
+  if (!isAdmin(sender)) {
+
+    recordAuditEvent({
+
+      type:
+        "UNAUTHORIZED_CONTROL_ATTEMPT",
+
+      sender,
+
+      command
+
+    });
+
+    return {
+
+      handled: true,
+
+      response:
+        "Unauthorized control command."
+
+    };
+
+  }
+
+
+  /* =====================================================
+     STOP
+     ===================================================== */
+
+  if (
+    command === "STOP"
+  ) {
+
+    setEmergencyStop(
+      true,
+      sender
+    );
+
+    return {
+
+      handled: true,
+
+      response:
+        "🛑 Silent Strategist emergency stop ENABLED.\n\nNormal AI processing is now blocked.\n\nThe control system remains active so an authorized administrator can use RESUME."
+
+    };
+
+  }
+
+
+  /* =====================================================
+     RESUME
+     ===================================================== */
+
+  if (
+    command === "RESUME"
+  ) {
+
+    setEmergencyStop(
+      false,
+      sender
+    );
+
+    return {
+
+      handled: true,
+
+      response:
+        "🟢 Silent Strategist resumed.\n\nNormal AI processing is enabled again."
+
+    };
+
+  }
+
+
+  /* =====================================================
+     STATUS
+     ===================================================== */
+
+  if (
+    command === "STATUS"
+  ) {
+
+    const status =
+      getSystemStatus();
+
+    return {
+
+      handled: true,
+
+      response:
+        `Silent Strategist Status\n\nSystem: ${
+          status.systemStatus
+        }\nEmergency Stop: ${
+          status.emergencyStop
+            ? "ENABLED"
+            : "DISABLED"
+        }\nPolicy: ACTIVE\nPolicy Version: ${
+          status.policyVersion
+        }\nAdmin Control: ${
+          status.adminControlConfigured
+            ? "CONFIGURED"
+            : "NOT CONFIGURED"
+        }`
+
+    };
+
+  }
+
+
+  return {
+    handled: false
+  };
+
+}
+
+
+/* =========================================================
    PROVIDER REGISTRY
    ========================================================= */
 
@@ -161,7 +454,9 @@ function getAvailableProviders(
     !capability ||
     !capability.enabled
   ) {
+
     return [];
+
   }
 
   return capability.providers
@@ -172,6 +467,7 @@ function getAvailableProviders(
       (a, b) =>
         a.priority - b.priority
     );
+
 }
 
 
@@ -205,6 +501,7 @@ function classifyTask(message) {
 
   ];
 
+
   if (
     imageKeywords.some(
       keyword =>
@@ -213,11 +510,16 @@ function classifyTask(message) {
   ) {
 
     return {
+
       capability: "image",
+
       confidence: 0.95,
+
       reason:
         "Image-related instruction detected."
+
     };
+
   }
 
 
@@ -234,6 +536,7 @@ function classifyTask(message) {
 
   ];
 
+
   if (
     speechKeywords.some(
       keyword =>
@@ -242,11 +545,16 @@ function classifyTask(message) {
   ) {
 
     return {
+
       capability: "speech",
+
       confidence: 0.90,
+
       reason:
         "Speech/audio instruction detected."
+
     };
+
   }
 
 
@@ -267,6 +575,7 @@ function classifyTask(message) {
 
   ];
 
+
   if (
     codingKeywords.some(
       keyword =>
@@ -275,11 +584,16 @@ function classifyTask(message) {
   ) {
 
     return {
+
       capability: "coding",
+
       confidence: 0.90,
+
       reason:
         "Coding-related instruction detected."
+
     };
+
   }
 
 
@@ -297,6 +611,7 @@ function classifyTask(message) {
 
   ];
 
+
   if (
     researchKeywords.some(
       keyword =>
@@ -305,22 +620,32 @@ function classifyTask(message) {
   ) {
 
     return {
+
       capability: "research",
+
       confidence: 0.90,
+
       reason:
         "Research-related instruction detected."
+
     };
+
   }
 
 
   /* DEFAULT */
 
   return {
+
     capability: "reasoning",
+
     confidence: 0.75,
+
     reason:
       "General reasoning/conversation task."
+
   };
+
 }
 
 
@@ -334,40 +659,62 @@ function evaluatePolicy(message) {
     "POLICY: Evaluating incoming request..."
   );
 
+
   if (
     !message ||
     typeof message !== "string"
   ) {
 
     return {
+
       allowed: false,
+
       riskLevel: "HIGH",
+
       requiresHumanApproval: true,
+
       reason:
         "Invalid or missing message."
+
     };
+
   }
+
 
   if (!message.trim()) {
 
     return {
+
       allowed: false,
+
       riskLevel: "HIGH",
+
       requiresHumanApproval: true,
+
       reason:
         "Empty message."
+
     };
+
   }
 
+
   return {
+
     allowed: true,
+
     riskLevel: "LOW",
+
     requiresHumanApproval: false,
+
     reason:
       "Informational AI response permitted.",
+
     policyVersion:
       POLICY.version
+
   };
+
 }
 
 
@@ -381,42 +728,60 @@ function routeTask(classification) {
     "ROUTER: Selecting authorized provider..."
   );
 
+
   const capability =
     AI_CAPABILITIES[
       classification.capability
     ];
 
+
   if (!capability) {
 
     return {
+
       routed: false,
+
       reason:
         "Requested capability is not registered."
+
     };
+
   }
+
 
   if (!capability.enabled) {
 
     return {
+
       routed: false,
+
       reason:
         `Capability "${capability.name}" is currently disabled.`
+
     };
+
   }
+
 
   const providers =
     getAvailableProviders(
       classification.capability
     );
 
+
   if (providers.length === 0) {
 
     return {
+
       routed: false,
+
       reason:
         `No authorized provider is currently available for ${capability.name}.`
+
     };
+
   }
+
 
   return {
 
@@ -433,7 +798,9 @@ function routeTask(classification) {
 
     fallbackProvider:
       providers[1] || null
+
   };
+
 }
 
 
@@ -454,6 +821,7 @@ async function openAIReasoningAdapter(
     `MODEL: ${provider.model}`
   );
 
+
   const completion =
     await openai.chat.completions.create({
 
@@ -463,6 +831,7 @@ async function openAIReasoningAdapter(
       messages: [
 
         {
+
           role: "system",
 
           content: `
@@ -487,14 +856,19 @@ Your responsibilities:
 Silent Strategist policy version:
 ${POLICY.version}
           `
+
         },
 
         {
+
           role: "user",
+
           content: message
+
         }
 
       ]
+
     });
 
 
@@ -510,6 +884,7 @@ ${POLICY.version}
     throw new Error(
       "Provider returned an empty response."
     );
+
   }
 
 
@@ -527,6 +902,7 @@ ${POLICY.version}
       provider.model
 
   };
+
 }
 
 
@@ -547,11 +923,14 @@ async function executeProvider(
       message,
       provider
     );
+
   }
+
 
   throw new Error(
     `No adapter exists for provider type: ${provider.type}`
   );
+
 }
 
 
@@ -628,6 +1007,7 @@ async function orchestrateAI(
       route.reason ||
       "No authorized AI provider available."
     );
+
   }
 
 
@@ -666,7 +1046,14 @@ async function orchestrateAI(
     });
 
 
-    return result;
+    return {
+
+      ...result,
+
+      capability:
+        route.capability
+
+    };
 
 
   } catch (primaryError) {
@@ -703,6 +1090,7 @@ async function orchestrateAI(
     ) {
 
       throw primaryError;
+
     }
 
 
@@ -739,7 +1127,14 @@ async function orchestrateAI(
       });
 
 
-      return fallbackResult;
+      return {
+
+        ...fallbackResult,
+
+        capability:
+          route.capability
+
+      };
 
 
     } catch (fallbackError) {
@@ -764,8 +1159,11 @@ async function orchestrateAI(
 
 
       throw fallbackError;
+
     }
+
   }
+
 }
 
 
@@ -795,6 +1193,7 @@ function verifyAIResponse(
         "AI returned an empty or invalid response."
 
     };
+
   }
 
 
@@ -806,6 +1205,7 @@ function verifyAIResponse(
       "AI response passed basic verification."
 
   };
+
 }
 
 
@@ -856,7 +1256,10 @@ async function sendWhatsAppMessage(
               "text",
 
             text: {
-              body: text
+
+              body:
+                text
+
             }
 
           })
@@ -884,10 +1287,12 @@ async function sendWhatsAppMessage(
     throw new Error(
       `WhatsApp API failed: ${JSON.stringify(data)}`
     );
+
   }
 
 
   return data;
+
 }
 
 
@@ -900,13 +1305,47 @@ async function processMessage(
   text
 ) {
 
+  /* =====================================================
+     EMERGENCY STOP
+     ===================================================== */
+
+  if (
+    SYSTEM_STATE.emergencyStop
+  ) {
+
+    recordAuditEvent({
+
+      type:
+        "MESSAGE_BLOCKED_BY_EMERGENCY_STOP",
+
+      sender:
+        from,
+
+      message:
+        text
+
+    });
+
+
+    console.log(
+      "MESSAGE BLOCKED: Emergency stop is active."
+    );
+
+
+    return;
+
+  }
+
+
   console.log(
     "========================================"
   );
 
+
   console.log(
     "SILENT STRATEGIST PIPELINE START"
   );
+
 
   console.log(
     "========================================"
@@ -952,7 +1391,9 @@ async function processMessage(
 
     });
 
+
     return;
+
   }
 
 
@@ -1006,7 +1447,9 @@ async function processMessage(
 
     });
 
+
     return;
+
   }
 
 
@@ -1021,7 +1464,7 @@ async function processMessage(
       from,
 
     capability:
-      "reasoning",
+      aiResult.capability,
 
     provider:
       aiResult.provider,
@@ -1069,13 +1512,16 @@ async function processMessage(
     "========================================"
   );
 
+
   console.log(
     "SILENT STRATEGIST PIPELINE COMPLETE"
   );
 
+
   console.log(
     "========================================"
   );
+
 }
 
 
@@ -1129,6 +1575,7 @@ function getPublicCapabilities() {
 
     })
   );
+
 }
 
 
@@ -1141,7 +1588,9 @@ const server =
     (req, res) => {
 
 
-      /* HEALTH CHECK */
+      /* =====================================================
+         HEALTH CHECK
+         ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -1163,6 +1612,10 @@ const server =
             .join("");
 
 
+        const systemStatus =
+          getSystemStatus();
+
+
         res.writeHead(
           200,
           {
@@ -1177,6 +1630,20 @@ const server =
           <h1>The Silent Strategist AI</h1>
 
           <p>Status: Online</p>
+
+          <p>
+            System:
+            ${systemStatus.systemStatus}
+          </p>
+
+          <p>
+            Emergency Stop:
+            ${
+              systemStatus.emergencyStop
+                ? "ENABLED"
+                : "DISABLED"
+            }
+          </p>
 
           <p>WhatsApp Cloud API: Ready</p>
 
@@ -1208,10 +1675,13 @@ const server =
         `);
 
         return;
+
       }
 
 
-      /* CAPABILITY STATUS */
+      /* =====================================================
+         CAPABILITY STATUS
+         ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -1244,11 +1714,15 @@ const server =
           )
         );
 
+
         return;
+
       }
 
 
-      /* META WEBHOOK VERIFICATION */
+      /* =====================================================
+         META WEBHOOK VERIFICATION
+         ===================================================== */
 
       if (
         req.method === "GET" &&
@@ -1286,22 +1760,37 @@ const server =
           mode === "subscribe" &&
           token === VERIFY_TOKEN
         ) {
+
           console.log(
             "Webhook verified successfully."
           );
 
+
           res.writeHead(200);
-          res.end(challenge);
+
+          res.end(
+            challenge
+          );
+
           return;
+
         }
 
+
         res.writeHead(403);
-        res.end("Forbidden");
+
+        res.end(
+          "Forbidden"
+        );
+
         return;
+
       }
 
 
-      /* META WEBHOOK EVENTS */
+      /* =====================================================
+         META WEBHOOK EVENTS
+         ===================================================== */
 
       if (
         req.method === "POST" &&
@@ -1312,14 +1801,20 @@ const server =
           "STEP 1: POST /webhook received"
         );
 
+
         let body = "";
+
 
         req.on(
           "data",
           chunk => {
-            body += chunk.toString();
+
+            body +=
+              chunk.toString();
+
           }
         );
+
 
         req.on(
           "end",
@@ -1329,6 +1824,7 @@ const server =
 
               const payload =
                 JSON.parse(body);
+
 
               console.log(
                 "Webhook payload received:",
@@ -1377,7 +1873,9 @@ const server =
                       "Webhook event contains no messages. Ignoring."
                     );
 
+
                     continue;
+
                   }
 
 
@@ -1390,7 +1888,8 @@ const server =
 
 
                     /*
-                     * Currently process text messages only.
+                     * Currently process text
+                     * messages only.
                      */
 
                     if (
@@ -1400,6 +1899,7 @@ const server =
                       console.log(
                         `Unsupported WhatsApp message type: ${message.type}`
                       );
+
 
                       recordAuditEvent({
 
@@ -1414,7 +1914,9 @@ const server =
 
                       });
 
+
                       continue;
+
                     }
 
 
@@ -1430,7 +1932,9 @@ const server =
                         "Text message contains no body. Ignoring."
                       );
 
+
                       continue;
+
                     }
 
 
@@ -1439,29 +1943,124 @@ const server =
                       from
                     );
 
+
                     console.log(
                       "WhatsApp message:",
                       text
                     );
 
 
+                    /* =================================================
+                       ADMIN CONTROL COMMANDS
+                       ================================================= */
+
+                    const controlResult =
+                      await handleControlCommand(
+                        from,
+                        text
+                      );
+
+
+                    if (
+                      controlResult.handled
+                    ) {
+
+                      /*
+                       * Respond to Meta immediately.
+                       */
+
+                      if (
+                        !res.writableEnded
+                      ) {
+
+                        res.writeHead(
+                          200,
+                          {
+                            "Content-Type":
+                              "text/plain"
+                          }
+                        );
+
+
+                        res.end(
+                          "EVENT_RECEIVED"
+                        );
+
+                      }
+
+
+                      /*
+                       * Send the control response.
+                       */
+
+                      sendWhatsAppMessage(
+                        from,
+                        controlResult.response
+                      )
+                        .then(
+                          () => {
+
+                            console.log(
+                              "Control command response sent."
+                            );
+
+                          }
+                        )
+                        .catch(
+                          error => {
+
+                            console.error(
+                              "CONTROL RESPONSE ERROR:",
+                              error.message
+                            );
+
+
+                            recordAuditEvent({
+
+                              type:
+                                "CONTROL_RESPONSE_ERROR",
+
+                              sender:
+                                from,
+
+                              error:
+                                error.message
+
+                            });
+
+                          }
+                        );
+
+
+                      return;
+
+                    }
+
+
                     /*
-                     * Respond to Meta immediately so the
-                     * webhook request does not remain open
-                     * while the AI processes the message.
+                     * Respond to Meta immediately so
+                     * the webhook request does not remain
+                     * open while the AI processes the message.
                      */
 
-                    res.writeHead(
-                      200,
-                      {
-                        "Content-Type":
-                          "text/plain"
-                      }
-                    );
+                    if (
+                      !res.writableEnded
+                    ) {
 
-                    res.end(
-                      "EVENT_RECEIVED"
-                    );
+                      res.writeHead(
+                        200,
+                        {
+                          "Content-Type":
+                            "text/plain"
+                        }
+                      );
+
+
+                      res.end(
+                        "EVENT_RECEIVED"
+                      );
+
+                    }
 
 
                     /*
@@ -1506,14 +2105,18 @@ const server =
                         }
                       );
 
+
                     /*
                      * We already returned the HTTP response,
                      * so stop processing this webhook request.
                      */
 
                     return;
+
                   }
+
                 }
+
               }
 
 
@@ -1522,7 +2125,9 @@ const server =
                * acknowledge the webhook.
                */
 
-              if (!res.writableEnded) {
+              if (
+                !res.writableEnded
+              ) {
 
                 res.writeHead(
                   200,
@@ -1532,9 +2137,11 @@ const server =
                   }
                 );
 
+
                 res.end(
                   "EVENT_RECEIVED"
                 );
+
               }
 
             } catch (error) {
@@ -1568,19 +2175,27 @@ const server =
                   }
                 );
 
+
                 res.end(
                   "Invalid webhook payload"
                 );
+
               }
+
             }
+
           }
         );
 
+
         return;
+
       }
 
 
-      /* UNKNOWN ROUTE */
+      /* =====================================================
+         UNKNOWN ROUTE
+         ===================================================== */
 
       res.writeHead(
         404,
@@ -1590,9 +2205,11 @@ const server =
         }
       );
 
+
       res.end(
         "Not Found"
       );
+
     }
   );
 
@@ -1609,36 +2226,50 @@ server.listen(
       `The Silent Strategist AI running on port ${PORT}`
     );
 
+
     console.log(
       "Policy Engine: ACTIVE"
     );
+
 
     console.log(
       "Task Classifier: ACTIVE"
     );
 
+
     console.log(
       "AI Capability Registry: ACTIVE"
     );
+
 
     console.log(
       "AI Router: ACTIVE"
     );
 
+
     console.log(
       "Provider Adapter Layer: ACTIVE"
     );
+
 
     console.log(
       "Verification Layer: ACTIVE"
     );
 
+
     console.log(
       "Audit Logging: ACTIVE"
     );
 
+
+    console.log(
+      "Emergency Stop: ACTIVE"
+    );
+
+
     console.log(
       `Policy Version: ${POLICY.version}`
     );
+
   }
 );
