@@ -1286,6 +1286,359 @@ const server =
           mode === "subscribe" &&
           token === VERIFY_TOKEN
         ) {
-
           console.log(
-            "Webh
+            "Webhook verified successfully."
+          );
+
+          res.writeHead(200);
+          res.end(challenge);
+          return;
+        }
+
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+
+
+      /* META WEBHOOK EVENTS */
+
+      if (
+        req.method === "POST" &&
+        req.url === "/webhook"
+      ) {
+
+        console.log(
+          "STEP 1: POST /webhook received"
+        );
+
+        let body = "";
+
+        req.on(
+          "data",
+          chunk => {
+            body += chunk.toString();
+          }
+        );
+
+        req.on(
+          "end",
+          async () => {
+
+            try {
+
+              const payload =
+                JSON.parse(body);
+
+              console.log(
+                "Webhook payload received:",
+                JSON.stringify(
+                  payload,
+                  null,
+                  2
+                )
+              );
+
+
+              /*
+               * Ignore webhook events that do not
+               * contain WhatsApp messages.
+               */
+
+              const entries =
+                payload.entry || [];
+
+
+              for (
+                const entry of entries
+              ) {
+
+                const changes =
+                  entry.changes || [];
+
+
+                for (
+                  const change of changes
+                ) {
+
+                  const value =
+                    change.value || {};
+
+
+                  const messages =
+                    value.messages || [];
+
+
+                  if (
+                    messages.length === 0
+                  ) {
+
+                    console.log(
+                      "Webhook event contains no messages. Ignoring."
+                    );
+
+                    continue;
+                  }
+
+
+                  for (
+                    const message of messages
+                  ) {
+
+                    const from =
+                      message.from;
+
+
+                    /*
+                     * Currently process text messages only.
+                     */
+
+                    if (
+                      message.type !== "text"
+                    ) {
+
+                      console.log(
+                        `Unsupported WhatsApp message type: ${message.type}`
+                      );
+
+                      recordAuditEvent({
+
+                        type:
+                          "UNSUPPORTED_MESSAGE_TYPE",
+
+                        sender:
+                          from,
+
+                        messageType:
+                          message.type
+
+                      });
+
+                      continue;
+                    }
+
+
+                    const text =
+                      message.text?.body;
+
+
+                    if (
+                      !text
+                    ) {
+
+                      console.log(
+                        "Text message contains no body. Ignoring."
+                      );
+
+                      continue;
+                    }
+
+
+                    console.log(
+                      "WhatsApp sender:",
+                      from
+                    );
+
+                    console.log(
+                      "WhatsApp message:",
+                      text
+                    );
+
+
+                    /*
+                     * Respond to Meta immediately so the
+                     * webhook request does not remain open
+                     * while the AI processes the message.
+                     */
+
+                    res.writeHead(
+                      200,
+                      {
+                        "Content-Type":
+                          "text/plain"
+                      }
+                    );
+
+                    res.end(
+                      "EVENT_RECEIVED"
+                    );
+
+
+                    /*
+                     * Process the message asynchronously.
+                     */
+
+                    processMessage(
+                      from,
+                      text
+                    )
+                      .then(
+                        () => {
+
+                          console.log(
+                            "Message processing completed."
+                          );
+
+                        }
+                      )
+                      .catch(
+                        error => {
+
+                          console.error(
+                            "PROCESSING ERROR:",
+                            error.message
+                          );
+
+
+                          recordAuditEvent({
+
+                            type:
+                              "PROCESSING_ERROR",
+
+                            sender:
+                              from,
+
+                            error:
+                              error.message
+
+                          });
+
+                        }
+                      );
+
+                    /*
+                     * We already returned the HTTP response,
+                     * so stop processing this webhook request.
+                     */
+
+                    return;
+                  }
+                }
+              }
+
+
+              /*
+               * If there was no actual text message,
+               * acknowledge the webhook.
+               */
+
+              if (!res.writableEnded) {
+
+                res.writeHead(
+                  200,
+                  {
+                    "Content-Type":
+                      "text/plain"
+                  }
+                );
+
+                res.end(
+                  "EVENT_RECEIVED"
+                );
+              }
+
+            } catch (error) {
+
+              console.error(
+                "WEBHOOK PARSE ERROR:",
+                error.message
+              );
+
+
+              recordAuditEvent({
+
+                type:
+                  "WEBHOOK_PARSE_ERROR",
+
+                error:
+                  error.message
+
+              });
+
+
+              if (
+                !res.writableEnded
+              ) {
+
+                res.writeHead(
+                  400,
+                  {
+                    "Content-Type":
+                      "text/plain"
+                  }
+                );
+
+                res.end(
+                  "Invalid webhook payload"
+                );
+              }
+            }
+          }
+        );
+
+        return;
+      }
+
+
+      /* UNKNOWN ROUTE */
+
+      res.writeHead(
+        404,
+        {
+          "Content-Type":
+            "text/plain"
+        }
+      );
+
+      res.end(
+        "Not Found"
+      );
+    }
+  );
+
+
+/* =========================================================
+   START SERVER
+   ========================================================= */
+
+server.listen(
+  PORT,
+  () => {
+
+    console.log(
+      `The Silent Strategist AI running on port ${PORT}`
+    );
+
+    console.log(
+      "Policy Engine: ACTIVE"
+    );
+
+    console.log(
+      "Task Classifier: ACTIVE"
+    );
+
+    console.log(
+      "AI Capability Registry: ACTIVE"
+    );
+
+    console.log(
+      "AI Router: ACTIVE"
+    );
+
+    console.log(
+      "Provider Adapter Layer: ACTIVE"
+    );
+
+    console.log(
+      "Verification Layer: ACTIVE"
+    );
+
+    console.log(
+      "Audit Logging: ACTIVE"
+    );
+
+    console.log(
+      `Policy Version: ${POLICY.version}`
+    );
+  }
+);
