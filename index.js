@@ -8,17 +8,26 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+/*
+ * =========================================================
+ * OPENAI CLIENT
+ * =========================================================
+ */
+
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY
 });
 
-/* =========================================================
-   SILENT STRATEGIST POLICY
-   ========================================================= */
+
+/*
+ * =========================================================
+ * SILENT STRATEGIST POLICY
+ * =========================================================
+ */
 
 const POLICY = {
   name: "Silent Strategist Core Policy",
-  version: "1.0.0",
+  version: "2.0.0",
 
   principles: [
     "Human authority comes first.",
@@ -27,21 +36,291 @@ const POLICY = {
     "The AI cannot bypass application safety rules.",
     "The AI cannot modify its own policy.",
     "External actions must be separately authorized.",
-    "Important actions will require human approval.",
-    "The system must be transparent about what it has and has not done."
+    "Important actions require human approval.",
+    "The system must be transparent about what it has and has not done.",
+    "Only registered AI capabilities may be selected by the router.",
+    "Only authorized providers may be used.",
+    "Provider failure must not silently create unauthorized behavior.",
+    "Every orchestration decision must be auditable."
   ]
 };
 
 
-/* =========================================================
-   POLICY / SAFETY ENGINE
-   ========================================================= */
+/*
+ * =========================================================
+ * AI CAPABILITY REGISTRY
+ *
+ * This is the beginning of your AI control/orchestration
+ * layer.
+ *
+ * The Silent Strategist does NOT assume every AI is available.
+ * A capability must first be registered and authorized.
+ * =========================================================
+ */
+
+const AI_CAPABILITIES = {
+
+  reasoning: {
+    id: "reasoning",
+    name: "Reasoning",
+    description:
+      "General reasoning, analysis, planning and conversation.",
+
+    enabled: true,
+
+    providers: [
+      {
+        id: "openai-primary",
+        name: "OpenAI",
+        type: "openai",
+        enabled: true,
+        model: process.env.OPENAI_REASONING_MODEL || "gpt-4o-mini",
+        priority: 1
+      }
+    ]
+  },
+
+  image: {
+    id: "image",
+    name: "Image Generation",
+    description:
+      "Generate or transform images.",
+
+    enabled: false,
+
+    providers: []
+  },
+
+  speech: {
+    id: "speech",
+    name: "Speech",
+    description:
+      "Speech recognition and speech generation.",
+
+    enabled: false,
+
+    providers: []
+  },
+
+  coding: {
+    id: "coding",
+    name: "Coding",
+    description:
+      "Software development and code analysis.",
+
+    enabled: false,
+
+    providers: []
+  },
+
+  research: {
+    id: "research",
+    name: "Research",
+    description:
+      "Research and information retrieval.",
+
+    enabled: false,
+
+    providers: []
+  }
+
+};
+
+
+/*
+ * =========================================================
+ * PROVIDER REGISTRY
+ * =========================================================
+ */
+
+function getAvailableProviders(capabilityId) {
+
+  const capability =
+    AI_CAPABILITIES[capabilityId];
+
+  if (!capability) {
+    return [];
+  }
+
+  if (!capability.enabled) {
+    return [];
+  }
+
+  return capability.providers
+    .filter(provider => provider.enabled)
+    .sort((a, b) => a.priority - b.priority);
+}
+
+
+/*
+ * =========================================================
+ * TASK CLASSIFIER
+ *
+ * First version uses transparent rules.
+ *
+ * Later this can itself become an AI-assisted classifier,
+ * but the policy engine remains in control.
+ * =========================================================
+ */
+
+function classifyTask(message) {
+
+  console.log(
+    "CLASSIFIER: Determining task type..."
+  );
+
+  const text =
+    message.toLowerCase().trim();
+
+
+  /*
+   * IMAGE
+   */
+
+  const imageKeywords = [
+    "create an image",
+    "generate an image",
+    "make an image",
+    "draw an image",
+    "create a picture",
+    "generate a picture",
+    "draw a picture",
+    "edit this image",
+    "modify this image"
+  ];
+
+  if (
+    imageKeywords.some(
+      keyword => text.includes(keyword)
+    )
+  ) {
+
+    return {
+      capability: "image",
+      confidence: 0.95,
+      reason: "Image-related instruction detected."
+    };
+  }
+
+
+  /*
+   * SPEECH
+   */
+
+  const speechKeywords = [
+    "transcribe",
+    "transcription",
+    "voice recording",
+    "audio recording",
+    "convert speech",
+    "read this aloud"
+  ];
+
+  if (
+    speechKeywords.some(
+      keyword => text.includes(keyword)
+    )
+  ) {
+
+    return {
+      capability: "speech",
+      confidence: 0.90,
+      reason: "Speech/audio instruction detected."
+    };
+  }
+
+
+  /*
+   * CODING
+   */
+
+  const codingKeywords = [
+    "write code",
+    "write a program",
+    "debug this code",
+    "fix this code",
+    "javascript",
+    "python",
+    "node.js",
+    "nodejs",
+    "api code",
+    "programming"
+  ];
+
+  if (
+    codingKeywords.some(
+      keyword => text.includes(keyword)
+    )
+  ) {
+
+    return {
+      capability: "coding",
+      confidence: 0.90,
+      reason: "Coding-related instruction detected."
+    };
+  }
+
+
+  /*
+   * RESEARCH
+   */
+
+  const researchKeywords = [
+    "research",
+    "latest information",
+    "look up",
+    "search for",
+    "find information",
+    "what happened today",
+    "current information"
+  ];
+
+  if (
+    researchKeywords.some(
+      keyword => text.includes(keyword)
+    )
+  ) {
+
+    return {
+      capability: "research",
+      confidence: 0.90,
+      reason: "Research-related instruction detected."
+    };
+  }
+
+
+  /*
+   * DEFAULT
+   *
+   * Most normal WhatsApp questions currently go to
+   * reasoning.
+   */
+
+  return {
+    capability: "reasoning",
+    confidence: 0.75,
+    reason: "General reasoning/conversation task."
+  };
+}
+
+
+/*
+ * =========================================================
+ * POLICY / SAFETY ENGINE
+ * =========================================================
+ */
 
 function evaluatePolicy(message) {
 
-  console.log("POLICY: Evaluating incoming request...");
+  console.log(
+    "POLICY: Evaluating incoming request..."
+  );
 
-  if (!message || typeof message !== "string") {
+  if (
+    !message ||
+    typeof message !== "string"
+  ) {
+
     return {
       allowed: false,
       riskLevel: "HIGH",
@@ -50,9 +329,11 @@ function evaluatePolicy(message) {
     };
   }
 
-  const trimmedMessage = message.trim();
+  const trimmedMessage =
+    message.trim();
 
   if (!trimmedMessage) {
+
     return {
       allowed: false,
       riskLevel: "HIGH",
@@ -61,10 +342,13 @@ function evaluatePolicy(message) {
     };
   }
 
+
   /*
-   * At this stage the Silent Strategist is only answering
-   * messages. It does not have permission to perform
-   * external actions.
+   * IMPORTANT:
+   *
+   * At this stage the system is providing information.
+   * It does not have permission to perform external
+   * actions simply because a user asks.
    */
 
   return {
@@ -77,224 +361,674 @@ function evaluatePolicy(message) {
 }
 
 
-/* =========================================================
-   AI DECISION / VERIFICATION
-   ========================================================= */
+/*
+ * =========================================================
+ * PROVIDER ROUTER
+ * =========================================================
+ */
 
-function verifyAIResponse(reply) {
+function routeTask(classification) {
 
-  console.log("VERIFICATION: Checking AI response...");
+  console.log(
+    "ROUTER: Selecting authorized provider..."
+  );
 
-  if (!reply || typeof reply !== "string") {
+  const capability =
+    AI_CAPABILITIES[
+      classification.capability
+    ];
+
+
+  if (!capability) {
+
     return {
-      verified: false,
-      reason: "AI returned an empty or invalid response."
+      routed: false,
+      reason:
+        "Requested capability is not registered."
     };
   }
 
-  /*
-   * This is our first verification layer.
-   *
-   * We are deliberately keeping it simple for now.
-   * Later we will build a dedicated verification engine.
-   */
+
+  if (!capability.enabled) {
+
+    return {
+      routed: false,
+      reason:
+        `Capability "${capability.name}" is currently disabled.`
+    };
+  }
+
+
+  const providers =
+    getAvailableProviders(
+      classification.capability
+    );
+
+
+  if (providers.length === 0) {
+
+    return {
+      routed: false,
+      reason:
+        `No authorized provider is currently available for ${capability.name}.`
+    };
+  }
+
+
+  const primary =
+    providers[0];
+
+  const fallback =
+    providers[1] || null;
+
 
   return {
-    verified: true,
-    reason: "AI response passed basic verification."
+
+    routed: true,
+
+    capability:
+      classification.capability,
+
+    capabilityName:
+      capability.name,
+
+    primaryProvider:
+      primary,
+
+    fallbackProvider:
+      fallback
   };
 }
 
 
-/* =========================================================
-   AUDIT LOG
-   ========================================================= */
+/*
+ * =========================================================
+ * OPENAI PROVIDER ADAPTER
+ *
+ * The rest of Silent Strategist does not need to know
+ * how OpenAI works internally.
+ *
+ * This is the important architectural separation.
+ * =========================================================
+ */
+
+async function openAIReasoningAdapter(
+  message,
+  provider
+) {
+
+  console.log(
+    `PROVIDER: ${provider.name}`
+  );
+
+  console.log(
+    `MODEL: ${provider.model}`
+  );
+
+
+  const completion =
+    await openai.chat.completions.create({
+
+      model: provider.model,
+
+      messages: [
+
+        {
+          role: "system",
+
+          content: `
+You are the reasoning component inside
+The Silent Strategist AI.
+
+You are an AI capability, not the authority.
+
+Human authority comes first.
+
+Your responsibilities:
+
+1. Provide useful reasoning and information.
+2. Be honest about uncertainty.
+3. Never claim an external action occurred unless the application actually confirms it.
+4. Never claim permissions you do not have.
+5. Never attempt to bypass application policies.
+6. Never modify your governing policy.
+7. Do not treat your own recommendation as human authorization.
+8. Important external actions require authorization outside the model.
+
+The Silent Strategist policy version is:
+${POLICY.version}
+          `
+        },
+
+        {
+          role: "user",
+          content: message
+        }
+
+      ]
+    });
+
+
+  const reply =
+    completion
+      .choices?.[0]
+      ?.message
+      ?.content;
+
+
+  if (!reply) {
+
+    throw new Error(
+      "Provider returned an empty response."
+    );
+  }
+
+
+  return {
+    reply,
+    provider: provider.id,
+    providerName: provider.name,
+    model: provider.model
+  };
+}
+
+
+/*
+ * =========================================================
+ * PROVIDER ADAPTER DISPATCHER
+ * =========================================================
+ */
+
+async function executeProvider(
+  message,
+  provider
+) {
+
+  if (
+    provider.type === "openai"
+  ) {
+
+    return await openAIReasoningAdapter(
+      message,
+      provider
+    );
+  }
+
+
+  throw new Error(
+    `No adapter exists for provider type: ${provider.type}`
+  );
+}
+
+
+/*
+ * =========================================================
+ * AI ORCHESTRATOR
+ *
+ * This is the central brain of the architecture.
+ * =========================================================
+ */
+
+async function orchestrateAI(
+  message,
+  sender
+) {
+
+  /*
+   * STEP A
+   * Classify task
+   */
+
+  const classification =
+    classifyTask(message);
+
+
+  recordAuditEvent({
+
+    type:
+      "TASK_CLASSIFICATION",
+
+    sender,
+
+    classification
+  });
+
+
+  /*
+   * STEP B
+   * Route task
+   */
+
+  const route =
+    routeTask(classification);
+
+
+  recordAuditEvent({
+
+    type:
+      "AI_ROUTING_DECISION",
+
+    sender,
+
+    route: {
+
+      routed:
+        route.routed,
+
+      capability:
+        route.capability,
+
+      capabilityName:
+        route.capabilityName,
+
+      primaryProvider:
+        route.primaryProvider?.id,
+
+      fallbackProvider:
+        route.fallbackProvider?.id,
+
+      reason:
+        route.reason
+    }
+  });
+
+
+  /*
+   * No provider available.
+   */
+
+  if (!route.routed) {
+
+    throw new Error(
+      route.reason ||
+      "No authorized AI provider available."
+    );
+  }
+
+
+  /*
+   * STEP C
+   * Try primary provider
+   */
+
+  try {
+
+    console.log(
+      `ORCHESTRATOR: Using primary provider ${route.primaryProvider.id}`
+    );
+
+
+    const result =
+      await executeProvider(
+        message,
+        route.primaryProvider
+      );
+
+
+    recordAuditEvent({
+
+      type:
+        "PRIMARY_PROVIDER_SUCCESS",
+
+      sender,
+
+      capability:
+        route.capability,
+
+      provider:
+        route.primaryProvider.id,
+
+      model:
+        route.primaryProvider.model
+    });
+
+
+    return result;
+
+  } catch (primaryError) {
+
+    console.error(
+      "PRIMARY PROVIDER ERROR:",
+      primaryError.message
+    );
+
+
+    recordAuditEvent({
+
+      type:
+        "PRIMARY_PROVIDER_FAILURE",
+
+      sender,
+
+      capability:
+        route.capability,
+
+      provider:
+        route.primaryProvider.id,
+
+      error:
+        primaryError.message
+    });
+
+
+    /*
+     * STEP D
+     * Fallback provider
+     */
+
+    if (!route.fallbackProvider) {
+
+      throw primaryError;
+    }
+
+
+    console.log(
+      `ORCHESTRATOR: Attempting fallback provider ${route.fallbackProvider.id}`
+    );
+
+
+    try {
+
+      const fallbackResult =
+        await executeProvider(
+          message,
+          route.fallbackProvider
+        );
+
+
+      recordAuditEvent({
+
+        type:
+          "FALLBACK_PROVIDER_SUCCESS",
+
+        sender,
+
+        capability:
+          route.capability,
+
+        provider:
+          route.fallbackProvider.id,
+
+        model:
+          route.fallbackProvider.model
+      });
+
+
+      return fallbackResult;
+
+    } catch (fallbackError) {
+
+      recordAuditEvent({
+
+        type:
+          "FALLBACK_PROVIDER_FAILURE",
+
+        sender,
+
+        capability:
+          route.capability,
+
+        provider:
+          route.fallbackProvider.id,
+
+        error:
+          fallbackError.message
+      });
+
+
+      throw fallbackError;
+    }
+  }
+}
+
+
+/*
+ * =========================================================
+ * RESPONSE VERIFICATION
+ * =========================================================
+ */
+
+function verifyAIResponse(
+  reply
+) {
+
+  console.log(
+    "VERIFICATION: Checking AI response..."
+  );
+
+
+  if (
+    !reply ||
+    typeof reply !== "string"
+  ) {
+
+    return {
+
+      verified: false,
+
+      reason:
+        "AI returned an empty or invalid response."
+    };
+  }
+
+
+  /*
+   * Basic verification for now.
+   *
+   * Later this becomes a dedicated verification engine
+   * with additional checks and independent validators.
+   */
+
+  return {
+
+    verified: true,
+
+    reason:
+      "AI response passed basic verification."
+  };
+}
+
+
+/*
+ * =========================================================
+ * AUDIT LOG
+ * =========================================================
+ */
 
 const auditLog = [];
 
-function recordAuditEvent(event) {
+
+function recordAuditEvent(
+  event
+) {
 
   const auditEvent = {
-    timestamp: new Date().toISOString(),
+
+    timestamp:
+      new Date().toISOString(),
+
     ...event
   };
 
-  auditLog.push(auditEvent);
+
+  auditLog.push(
+    auditEvent
+  );
+
 
   console.log(
     "AUDIT LOG:",
-    JSON.stringify(auditEvent, null, 2)
+    JSON.stringify(
+      auditEvent,
+      null,
+      2
+    )
   );
 
+
   /*
-   * Keep the development log from growing forever.
+   * Development memory limit.
+   *
+   * This is NOT yet permanent storage.
+   * Persistent audit storage is a later governance step.
    */
-  if (auditLog.length > 1000) {
+
+  if (
+    auditLog.length > 1000
+  ) {
+
     auditLog.shift();
   }
 }
 
 
-/* =========================================================
-   SEND WHATSAPP MESSAGE
-   ========================================================= */
+/*
+ * =========================================================
+ * SEND WHATSAPP MESSAGE
+ * =========================================================
+ */
 
-async function sendWhatsAppMessage(to, text) {
+async function sendWhatsAppMessage(
+  to,
+  text
+) {
 
-  console.log("STEP 6: Sending WhatsApp reply...");
+  console.log(
+    "STEP 6: Sending WhatsApp reply..."
+  );
+
 
   const url =
     `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
 
-  const response = await fetch(url, {
-    method: "POST",
 
-    headers: {
-      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json"
-    },
+  const response =
+    await fetch(
+      url,
+      {
 
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to: to,
-      type: "text",
-      text: {
-        body: text
+        method: "POST",
+
+        headers: {
+
+          "Authorization":
+            `Bearer ${WHATSAPP_TOKEN}`,
+
+          "Content-Type":
+            "application/json"
+        },
+
+        body:
+          JSON.stringify({
+
+            messaging_product:
+              "whatsapp",
+
+            to,
+
+            type:
+              "text",
+
+            text: {
+
+              body:
+                text
+            }
+          })
       }
-    })
-  });
+    );
 
-  const data = await response.json();
+
+  const data =
+    await response.json();
+
 
   console.log(
     "WhatsApp API response:",
-    JSON.stringify(data, null, 2)
+    JSON.stringify(
+      data,
+      null,
+      2
+    )
   );
 
+
   if (!response.ok) {
+
     throw new Error(
       `WhatsApp API failed: ${JSON.stringify(data)}`
     );
   }
 
+
   return data;
 }
 
 
-/* =========================================================
-   ASK SILENT STRATEGIST AI
-   ========================================================= */
+/*
+ * =========================================================
+ * COMPLETE SILENT STRATEGIST PIPELINE
+ * =========================================================
+ */
 
-async function askOpenAI(message) {
-
-  console.log("STEP 4: Sending message to Silent Strategist AI...");
-
-  const completion = await openai.chat.completions.create({
-
-    model: "gpt-4o-mini",
-
-    messages: [
-
-      {
-        role: "system",
-
-        content: `
-You are the AI reasoning component of The Silent Strategist.
-
-Your role is to assist humans, not replace human authority.
-
-CORE PRINCIPLES:
-
-1. Human authority comes first.
-2. You provide information, reasoning, analysis and recommendations.
-3. You do not have independent authority to perform external actions.
-4. You cannot grant yourself permissions.
-5. You cannot bypass application policies or safety controls.
-6. You cannot modify your own governing rules.
-7. Never claim that an external action was completed unless the application actually confirms that action.
-8. When an important action would require authorization, clearly state that human approval is required.
-9. Be transparent about uncertainty.
-10. Follow the application's policy rather than attempting to override it.
-
-The Silent Strategist is being developed around this architecture:
-
-Human authority
-→ AI assistance
-→ Policy and safety
-→ Verification
-→ Authorized action
-→ Audit
-→ Human oversight
-
-Current policy version: ${POLICY.version}
-
-Current policy principles:
-${POLICY.principles.map((item, index) => `${index + 1}. ${item}`).join("\n")}
-        `
-      },
-
-      {
-        role: "user",
-        content: message
-      }
-
-    ]
-  });
-
-  const reply =
-    completion.choices[0]?.message?.content;
+async function processMessage(
+  from,
+  text
+) {
 
   console.log(
-    "AI reply:",
-    reply
+    "========================================"
   );
 
-  if (!reply) {
-    throw new Error(
-      "OpenAI returned an empty reply"
-    );
-  }
+  console.log(
+    "SILENT STRATEGIST PIPELINE START"
+  );
 
-  return reply;
-}
+  console.log(
+    "========================================"
+  );
 
-
-/* =========================================================
-   SILENT STRATEGIST PIPELINE
-   ========================================================= */
-
-async function processMessage(from, text) {
-
-  console.log("========================================");
-  console.log("SILENT STRATEGIST PIPELINE START");
-  console.log("========================================");
 
   /*
    * STEP 1
-   * Policy evaluation
+   * Policy
    */
 
   const policyResult =
     evaluatePolicy(text);
 
+
   recordAuditEvent({
-    type: "POLICY_EVALUATION",
-    sender: from,
-    message: text,
+
+    type:
+      "POLICY_EVALUATION",
+
+    sender:
+      from,
+
+    message:
+      text,
+
     policyResult
   });
 
-  if (!policyResult.allowed) {
 
-    console.log(
-      "POLICY: Request rejected."
-    );
+  if (
+    !policyResult.allowed
+  ) {
 
     recordAuditEvent({
-      type: "REQUEST_REJECTED",
-      sender: from,
-      reason: policyResult.reason
+
+      type:
+        "REQUEST_REJECTED",
+
+      sender:
+        from,
+
+      reason:
+        policyResult.reason
     });
+
 
     return;
   }
@@ -302,44 +1036,63 @@ async function processMessage(from, text) {
 
   /*
    * STEP 2
-   * Ask the AI
+   * AI ORCHESTRATION
    */
 
-  const aiReply =
-    await askOpenAI(text);
+  const aiResult =
+    await orchestrateAI(
+      text,
+      from
+    );
 
 
   /*
    * STEP 3
-   * Verify the AI response
+   * Verify response
    */
 
   const verification =
-    verifyAIResponse(aiReply);
+    verifyAIResponse(
+      aiResult.reply
+    );
+
 
   recordAuditEvent({
-    type: "AI_RESPONSE_VERIFICATION",
-    sender: from,
+
+    type:
+      "AI_RESPONSE_VERIFICATION",
+
+    sender:
+      from,
+
+    provider:
+      aiResult.provider,
+
     verification
   });
 
 
   /*
    * STEP 4
-   * Do not send an unverified response.
+   * Block failed verification
    */
 
-  if (!verification.verified) {
-
-    console.log(
-      "VERIFICATION FAILED: Response blocked."
-    );
+  if (
+    !verification.verified
+  ) {
 
     recordAuditEvent({
-      type: "RESPONSE_BLOCKED",
-      sender: from,
-      reason: verification.reason
+
+      type:
+        "RESPONSE_BLOCKED",
+
+      sender:
+        from,
+
+      reason:
+        verification.reason
     });
+
 
     return;
   }
@@ -347,370 +1100,175 @@ async function processMessage(from, text) {
 
   /*
    * STEP 5
-   * Record the final decision before sending.
+   * Record approved response
    */
 
   recordAuditEvent({
-    type: "AI_RESPONSE_APPROVED",
-    sender: from,
-    riskLevel: policyResult.riskLevel,
-    response: aiReply
+
+    type:
+      "AI_RESPONSE_APPROVED",
+
+    sender:
+      from,
+
+    capability:
+      aiResult.provider,
+
+    provider:
+      aiResult.provider,
+
+    model:
+      aiResult.model,
+
+    riskLevel:
+      policyResult.riskLevel,
+
+    response:
+      aiResult.reply
   });
 
 
   /*
    * STEP 6
-   * Send the verified response.
+   * Send response
    */
 
   await sendWhatsAppMessage(
     from,
-    aiReply
+    aiResult.reply
   );
 
 
   /*
    * STEP 7
-   * Record successful action.
+   * Audit successful action
    */
 
   recordAuditEvent({
-    type: "WHATSAPP_RESPONSE_SENT",
-    sender: from,
-    action: "SEND_WHATSAPP_MESSAGE",
-    status: "SUCCESS"
+
+    type:
+      "WHATSAPP_RESPONSE_SENT",
+
+    sender:
+      from,
+
+    action:
+      "SEND_WHATSAPP_MESSAGE",
+
+    status:
+      "SUCCESS"
   });
 
-  console.log("========================================");
-  console.log("SILENT STRATEGIST PIPELINE COMPLETE");
-  console.log("========================================");
+
+  console.log(
+    "========================================"
+  );
+
+  console.log(
+    "SILENT STRATEGIST PIPELINE COMPLETE"
+  );
+
+  console.log(
+    "========================================"
+  );
 }
 
 
-/* =========================================================
-   WEB SERVER
-   ========================================================= */
+/*
+ * =========================================================
+ * WEB SERVER
+ * =========================================================
+ */
 
-const server = http.createServer(
-  async (req, res) => {
-
-    /* =====================================================
-       HEALTH CHECK
-       ===================================================== */
-
-    if (
-      req.method === "GET" &&
-      req.url === "/"
-    ) {
-
-      res.writeHead(200, {
-        "Content-Type":
-          "text/html; charset=utf-8"
-      });
-
-      res.end(`
-        <h1>The Silent Strategist AI</h1>
-        <p>Status: Online</p>
-        <p>WhatsApp Cloud API: Ready</p>
-        <p>Policy Engine: Active</p>
-        <p>Verification Layer: Active</p>
-        <p>Audit Logging: Active</p>
-        <p>Policy Version: ${POLICY.version}</p>
-      `);
-
-      return;
-    }
+const server =
+  http.createServer(
+    async (req, res) => {
 
 
-    /* =====================================================
-       META WEBHOOK VERIFICATION
-       ===================================================== */
-
-    if (
-      req.method === "GET" &&
-      req.url.startsWith("/webhook")
-    ) {
-
-      const url = new URL(
-        req.url,
-        `http://${req.headers.host}`
-      );
-
-      const mode =
-        url.searchParams.get("hub.mode");
-
-      const token =
-        url.searchParams.get(
-          "hub.verify_token"
-        );
-
-      const challenge =
-        url.searchParams.get(
-          "hub.challenge"
-        );
+      /*
+       * HEALTH CHECK
+       */
 
       if (
-        mode === "subscribe" &&
-        token === VERIFY_TOKEN
+        req.method === "GET" &&
+        req.url === "/"
       ) {
 
-        console.log(
-          "Webhook verified successfully."
+        res.writeHead(
+          200,
+          {
+            "Content-Type":
+              "text/html; charset=utf-8"
+          }
         );
 
-        res.writeHead(200);
 
-        res.end(challenge);
+        const capabilityStatus =
+          Object.values(
+            AI_CAPABILITIES
+          )
+            .map(
+              capability =>
+                `<li>${capability.name}: ${
+                  capability.enabled
+                    ? "Enabled"
+                    : "Disabled"
+                }</li>`
+            )
+            .join("");
+
+
+        res.end(`
+          <h1>The Silent Strategist AI</h1>
+
+          <p>Status: Online</p>
+
+          <p>WhatsApp Cloud API: Ready</p>
+
+          <p>Policy Engine: Active</p>
+
+          <p>Task Classifier: Active</p>
+
+          <p>AI Capability Registry: Active</p>
+
+          <p>AI Router: Active</p>
+
+          <p>Provider Adapter Layer: Active</p>
+
+          <p>Verification Layer: Active</p>
+
+          <p>Audit Logging: Active</p>
+
+          <p>Policy Version: ${POLICY.version}</p>
+
+          <h2>AI Capabilities</h2>
+
+          <ul>
+            ${capabilityStatus}
+          </ul>
+        `);
 
         return;
       }
 
-      res.writeHead(403);
 
-      res.end("Forbidden");
-
-      return;
-    }
-
-
-    /* =====================================================
-       RECEIVE WHATSAPP WEBHOOK
-       ===================================================== */
-
-    if (
-      req.method === "POST" &&
-      req.url === "/webhook"
-    ) {
-
-      console.log(
-        "STEP 1: POST /webhook received"
-      );
-
-      let body = "";
-
-      req.on(
-        "data",
-        chunk => {
-          body += chunk;
-        }
-      );
-
-      req.on(
-        "end",
-        async () => {
-
-          try {
-
-            console.log(
-              "STEP 2: Request body received"
-            );
-
-            const data =
-              JSON.parse(body);
-
-            console.log(
-              "Webhook data:",
-              JSON.stringify(
-                data,
-                null,
-                2
-              )
-            );
-
-            const message =
-              data
-                .entry?.[0]
-                ?.changes?.[0]
-                ?.value
-                ?.messages?.[0];
-
-
-            if (!message) {
-
-              console.log(
-                "NO MESSAGE FOUND - probably a status/event"
-              );
-
-              res.writeHead(200);
-
-              res.end(
-                "EVENT_RECEIVED"
-              );
-
-              return;
-            }
-
-
-            console.log(
-              "STEP 3: Message found:",
-              JSON.stringify(
-                message,
-                null,
-                2
-              )
-            );
-
-
-            if (
-              message.type !== "text"
-            ) {
-
-              console.log(
-                "Message is not text:",
-                message.type
-              );
-
-              res.writeHead(200);
-
-              res.end(
-                "EVENT_RECEIVED"
-              );
-
-              return;
-            }
-
-
-            const from =
-              message.from;
-
-            const text =
-              message.text?.body;
-
-
-            if (!from || !text) {
-
-              console.log(
-                "Missing sender or message text"
-              );
-
-              res.writeHead(200);
-
-              res.end(
-                "EVENT_RECEIVED"
-              );
-
-              return;
-            }
-
-
-            console.log(
-              "Incoming WhatsApp message:",
-              text
-            );
-
-            console.log(
-              "Sender:",
-              from
-            );
-
-
-            /*
-             * Tell Meta that the webhook was received.
-             */
-
-            res.writeHead(200);
-
-            res.end(
-              "EVENT_RECEIVED"
-            );
-
-
-            /*
-             * Continue processing after acknowledging
-             * the webhook.
-             */
-
-            try {
-
-              await processMessage(
-                from,
-                text
-              );
-
-            } catch (
-              processingError
-            ) {
-
-              console.error(
-                "PROCESSING ERROR:",
-                processingError
-              );
-
-              recordAuditEvent({
-                type: "PROCESSING_ERROR",
-                sender: from,
-                error:
-                  processingError.message
-              });
-            }
-
-          } catch (error) {
-
-            console.error(
-              "WEBHOOK ERROR:",
-              error
-            );
-
-            recordAuditEvent({
-              type: "WEBHOOK_ERROR",
-              error: error.message
-            });
-
-            if (
-              !res.headersSent
-            ) {
-
-              res.writeHead(200);
-
-              res.end(
-                "EVENT_RECEIVED"
-              );
-            }
-          }
-        }
-      );
-
-      return;
-    }
-
-
-    /* =====================================================
-       404
-       ===================================================== */
-
-    res.writeHead(404);
-
-    res.end("Not found");
-  }
-);
-
-
-/* =========================================================
-   START SERVER
-   ========================================================= */
-
-server.listen(
-  PORT,
-  () => {
-
-    console.log(
-      `The Silent Strategist AI running on port ${PORT}`
-    );
-
-    console.log(
-      `Policy Engine: ACTIVE`
-    );
-
-    console.log(
-      `Verification Layer: ACTIVE`
-    );
-
-    console.log(
-      `Audit Logging: ACTIVE`
-    );
-
-    console.log(
-      `Policy Version: ${POLICY.version}`
-    );
-  }
-);
+      /*
+       * =====================================================
+       * CAPABILITY STATUS
+       *
+       * This endpoint is informational only.
+       * It does not grant permissions or execute actions.
+       * =====================================================
+       */
+
+      if (
+        req.method === "GET" &&
+        req.url === "/capabilities"
+      ) {
+
+        const publicCapabilities =
+          Object.values(
+            AI_CAPABILITIES
+          )
+            .map(
+  
