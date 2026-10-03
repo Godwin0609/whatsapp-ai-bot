@@ -181,6 +181,570 @@ const SYSTEM_STATE = {
 
 
 /* =========================================================
+   ROBOT CONTROLLER LAYER
+   ========================================================= */
+
+const ROBOT_STATE = {
+
+  id:
+    "silent-strategist-robot-01",
+
+  position: {
+    x: 0,
+    y: 0
+  },
+
+  battery: 100,
+
+  status:
+    "IDLE",
+
+  destination:
+    null,
+
+  lastTask:
+    null
+
+};
+
+
+const ROBOT_LOCATIONS = {
+
+  chargingStation: {
+
+    name:
+      "Charging Station",
+
+    x: 5,
+
+    y: 5
+
+  }
+
+};
+
+
+/* =========================================================
+   ROBOT STATUS
+   ========================================================= */
+
+function getRobotStatus() {
+
+  return {
+
+    id:
+      ROBOT_STATE.id,
+
+    position:
+      ROBOT_STATE.position,
+
+    battery:
+      ROBOT_STATE.battery,
+
+    status:
+      ROBOT_STATE.status,
+
+    destination:
+      ROBOT_STATE.destination,
+
+    lastTask:
+      ROBOT_STATE.lastTask
+
+  };
+
+}
+
+
+/* =========================================================
+   ROBOT COMMAND DETECTION
+   ========================================================= */
+
+function isRobotCommand(text) {
+
+  const command =
+    String(text || "")
+      .trim()
+      .toUpperCase();
+
+
+  return (
+    command ===
+    "GO TO CHARGING STATION"
+  );
+
+}
+
+
+/* =========================================================
+   ROBOT ROUTE PLANNER
+   ========================================================= */
+
+function calculateRobotRoute(
+  start,
+  destination
+) {
+
+  const route = [];
+
+  let x =
+    start.x;
+
+  let y =
+    start.y;
+
+
+  while (
+    x !== destination.x
+  ) {
+
+    x +=
+      x < destination.x
+        ? 1
+        : -1;
+
+
+    route.push({
+
+      x,
+
+      y
+
+    });
+
+  }
+
+
+  while (
+    y !== destination.y
+  ) {
+
+    y +=
+      y < destination.y
+        ? 1
+        : -1;
+
+
+    route.push({
+
+      x,
+
+      y
+
+    });
+
+  }
+
+
+  return route;
+
+}
+
+
+/* =========================================================
+   ROBOT TASK EXECUTION
+   ========================================================= */
+
+async function executeRobotTask(
+  sender,
+  text
+) {
+
+  const command =
+    String(text || "")
+      .trim()
+      .toUpperCase();
+
+
+  if (
+    !isRobotCommand(command)
+  ) {
+
+    return {
+
+      handled:
+        false
+
+    };
+
+  }
+
+
+  /* -------------------------------------------------------
+     HUMAN AUTHORIZATION
+     ------------------------------------------------------- */
+
+  if (
+    !isAdmin(sender)
+  ) {
+
+    recordAuditEvent({
+
+      type:
+        "ROBOT_COMMAND_UNAUTHORIZED",
+
+      sender,
+
+      command
+
+    });
+
+
+    return {
+
+      handled:
+        true,
+
+      success:
+        false,
+
+      response:
+        "Unauthorized robot command."
+
+    };
+
+  }
+
+
+  /* -------------------------------------------------------
+     EMERGENCY STOP
+     ------------------------------------------------------- */
+
+  if (
+    SYSTEM_STATE.emergencyStop
+  ) {
+
+    recordAuditEvent({
+
+      type:
+        "ROBOT_COMMAND_BLOCKED_BY_EMERGENCY_STOP",
+
+      sender,
+
+      command
+
+    });
+
+
+    return {
+
+      handled:
+        true,
+
+      success:
+        false,
+
+      response:
+        "🛑 Robot command blocked. Emergency Stop is active."
+
+    };
+
+  }
+
+
+  const destination =
+    ROBOT_LOCATIONS
+      .chargingStation;
+
+
+  const start = {
+
+    ...ROBOT_STATE.position
+
+  };
+
+
+  /* -------------------------------------------------------
+     BATTERY CHECK
+     ------------------------------------------------------- */
+
+  if (
+    ROBOT_STATE.battery < 10
+  ) {
+
+    recordAuditEvent({
+
+      type:
+        "ROBOT_TASK_BLOCKED_LOW_BATTERY",
+
+      sender,
+
+      command,
+
+      battery:
+        ROBOT_STATE.battery
+
+    });
+
+
+    return {
+
+      handled:
+        true,
+
+      success:
+        false,
+
+      response:
+        `🔋 Robot task blocked.
+
+Battery: ${ROBOT_STATE.battery}%
+
+The robot does not have enough simulated battery to begin the task.`
+
+    };
+
+  }
+
+
+  /* -------------------------------------------------------
+     PLAN
+     ------------------------------------------------------- */
+
+  ROBOT_STATE.status =
+    "PLANNING";
+
+  ROBOT_STATE.destination =
+    destination.name;
+
+
+  recordAuditEvent({
+
+    type:
+      "ROBOT_TASK_PLANNING",
+
+    sender,
+
+    command,
+
+    start,
+
+    destination
+
+  });
+
+
+  const route =
+    calculateRobotRoute(
+      start,
+      destination
+    );
+
+
+  /* -------------------------------------------------------
+     START MOVEMENT
+     ------------------------------------------------------- */
+
+  ROBOT_STATE.status =
+    "MOVING";
+
+
+  recordAuditEvent({
+
+    type:
+      "ROBOT_TASK_STARTED",
+
+    sender,
+
+    command,
+
+    route
+
+  });
+
+
+  /* -------------------------------------------------------
+     SIMULATED MOVEMENT
+     ------------------------------------------------------- */
+
+  for (
+    const step of route
+  ) {
+
+    /*
+     * Emergency Stop is checked
+     * during movement.
+     */
+
+    if (
+      SYSTEM_STATE.emergencyStop
+    ) {
+
+      ROBOT_STATE.status =
+        "STOPPED";
+
+
+      recordAuditEvent({
+
+        type:
+          "ROBOT_TASK_STOPPED",
+
+        sender,
+
+        command,
+
+        position:
+          ROBOT_STATE.position
+
+      });
+
+
+      return {
+
+        handled:
+          true,
+
+        success:
+          false,
+
+        response:
+          "🛑 Robot movement stopped by Emergency Stop."
+
+      };
+
+    }
+
+
+    ROBOT_STATE.position = {
+
+      x:
+        step.x,
+
+      y:
+        step.y
+
+    };
+
+
+    /*
+     * Simulated battery consumption.
+     */
+
+    ROBOT_STATE.battery =
+      Math.max(
+        0,
+        ROBOT_STATE.battery - 1
+      );
+
+  }
+
+
+  /* -------------------------------------------------------
+     VERIFY DESTINATION
+     ------------------------------------------------------- */
+
+  const reached =
+    ROBOT_STATE.position.x ===
+      destination.x &&
+    ROBOT_STATE.position.y ===
+      destination.y;
+
+
+  if (!reached) {
+
+    ROBOT_STATE.status =
+      "ERROR";
+
+
+    recordAuditEvent({
+
+      type:
+        "ROBOT_TASK_VERIFICATION_FAILED",
+
+      sender,
+
+      command,
+
+      position:
+        ROBOT_STATE.position
+
+    });
+
+
+    return {
+
+      handled:
+        true,
+
+      success:
+        false,
+
+      response:
+        "❌ Robot task failed verification."
+
+    };
+
+  }
+
+
+  /* -------------------------------------------------------
+     TASK COMPLETE
+     ------------------------------------------------------- */
+
+  ROBOT_STATE.status =
+    "CHARGING";
+
+  ROBOT_STATE.lastTask =
+    "GO TO CHARGING STATION";
+
+
+  /*
+   * Simulate the robot reaching
+   * the charger and charging.
+   */
+
+  ROBOT_STATE.battery =
+    100;
+
+
+  recordAuditEvent({
+
+    type:
+      "ROBOT_TASK_COMPLETED",
+
+    sender,
+
+    command,
+
+    position:
+      ROBOT_STATE.position,
+
+    verification:
+      "PASSED"
+
+  });
+
+
+  return {
+
+    handled:
+      true,
+
+    success:
+      true,
+
+    response:
+      `🤖 Robot task completed.
+
+Destination: ${destination.name}
+
+Position:
+(${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})
+
+Battery:
+${ROBOT_STATE.battery}%
+
+Verification:
+PASSED
+
+Audit:
+RECORDED`
+
+  };
+
+}
+
+
+/* =========================================================
    PHONE NUMBER NORMALIZATION
    ========================================================= */
 
@@ -301,7 +865,7 @@ async function handleControlCommand(
 
   /*
    * If this is not a control command,
-   * allow normal AI processing.
+   * allow normal processing.
    */
 
   if (
@@ -1010,7 +1574,6 @@ async function orchestrateAI(
 
   }
 
-
   /* PRIMARY PROVIDER */
 
   try {
@@ -1207,7 +1770,6 @@ function verifyAIResponse(
   };
 
 }
-
 
 /* =========================================================
    WHATSAPP SENDER
@@ -1522,9 +2084,7 @@ async function processMessage(
     "========================================"
   );
 
-}
-
-
+            }
 /* =========================================================
    PUBLIC CAPABILITY STATUS
    ========================================================= */
@@ -1616,6 +2176,10 @@ const server =
           getSystemStatus();
 
 
+        const robotStatus =
+          getRobotStatus();
+
+
         res.writeHead(
           200,
           {
@@ -1660,6 +2224,24 @@ const server =
           <p>Verification Layer: Active</p>
 
           <p>Audit Logging: Active</p>
+
+          <p>Robot Controller: Active</p>
+
+          <p>
+            Robot Status:
+            ${robotStatus.status}
+          </p>
+
+          <p>
+            Robot Position:
+            (${robotStatus.position.x},
+            ${robotStatus.position.y})
+          </p>
+
+          <p>
+            Robot Battery:
+            ${robotStatus.battery}%
+          </p>
 
           <p>
             Policy Version:
@@ -1706,6 +2288,45 @@ const server =
 
               capabilities:
                 getPublicCapabilities()
+
+            },
+
+            null,
+            2
+          )
+        );
+
+
+        return;
+
+      }
+      /* =====================================================
+         ROBOT STATUS
+         ===================================================== */
+
+      if (
+        req.method === "GET" &&
+        req.url === "/robot"
+      ) {
+
+        res.writeHead(
+          200,
+          {
+            "Content-Type":
+              "application/json"
+          }
+        );
+
+
+        res.end(
+          JSON.stringify(
+            {
+
+              controller:
+                "ACTIVE",
+
+              robot:
+                getRobotStatus()
 
             },
 
@@ -2034,6 +2655,91 @@ const server =
 
                       return;
 
+              }
+   /* =================================================
+                       ROBOT COMMANDS
+                       ================================================= */
+
+                    const robotResult =
+                      await executeRobotTask(
+                        from,
+                        text
+                      );
+
+
+                    if (
+                      robotResult.handled
+                    ) {
+
+                      /*
+                       * Respond to Meta immediately.
+                       */
+
+                      if (
+                        !res.writableEnded
+                      ) {
+
+                        res.writeHead(
+                          200,
+                          {
+                            "Content-Type":
+                              "text/plain"
+                          }
+                        );
+
+
+                        res.end(
+                          "EVENT_RECEIVED"
+                        );
+
+                      }
+
+
+                      /*
+                       * Send the robot response.
+                       */
+
+                      sendWhatsAppMessage(
+                        from,
+                        robotResult.response
+                      )
+                        .then(
+                          () => {
+
+                            console.log(
+                              "Robot command response sent."
+                            );
+
+                          }
+                        )
+                        .catch(
+                          error => {
+
+                            console.error(
+                              "ROBOT RESPONSE ERROR:",
+                              error.message
+                            );
+
+
+                            recordAuditEvent({
+
+                              type:
+                                "ROBOT_RESPONSE_ERROR",
+
+                              sender:
+                                from,
+
+                              error:
+                                error.message
+
+                            });
+
+                          }
+                        );
+
+
+                      return;
+
                     }
 
 
@@ -2212,8 +2918,6 @@ const server =
 
     }
   );
-
-
 /* =========================================================
    START SERVER
    ========================================================= */
@@ -2268,8 +2972,15 @@ server.listen(
 
 
     console.log(
+      "Robot Controller: ACTIVE"
+    );
+
+
+    console.log(
       `Policy Version: ${POLICY.version}`
     );
 
   }
 );
+                 
+ 
