@@ -1,9 +1,9 @@
 const http = require("http");
 const OpenAI = require("openai");
 
-// ============================================================
-// ENVIRONMENT
-// ============================================================
+// ===============================
+// ENVIRONMENT VARIABLES
+// ===============================
 
 const PORT = process.env.PORT || 3000;
 
@@ -13,19 +13,19 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_PHONE_NUMBER = process.env.ADMIN_PHONE_NUMBER;
 
-// ============================================================
-// OPENAI
-// ============================================================
+// ===============================
+// OPENAI CLIENT
+// ===============================
 
 const openai = OPENAI_API_KEY
   ? new OpenAI({
-      apiKey: OPENAI_API_KEY
+      apiKey: OPENAI_API_KEY,
     })
   : null;
 
-// ============================================================
-// POLICY
-// ============================================================
+// ===============================
+// POLICY ENGINE
+// ===============================
 
 const POLICY = {
   version: "2.0.0",
@@ -42,335 +42,562 @@ const POLICY = {
     reasoning: {
       enabled: true,
       provider: "openai",
-      model: "gpt-4o-mini"
+      model: "gpt-4o-mini",
     },
 
     image: {
-      enabled: false
+      enabled: false,
     },
 
     speech: {
-      enabled: false
+      enabled: false,
     },
 
     coding: {
-      enabled: false
+      enabled: false,
     },
 
     research: {
-      enabled: false
+      enabled: false,
     },
 
     robotics: {
       enabled: true,
-      mode: "simulation"
-    }
-  }
+      mode: "simulation",
+    },
+  },
 };
 
-// ============================================================
+// ===============================
 // SYSTEM STATE
-// ============================================================
+// ===============================
 
 const SYSTEM_STATE = {
   emergencyStop: false,
-  version: "1.0.0"
+  version: "1.0.0",
 };
 
-// ============================================================
+// ===============================
 // AUDIT LOG
-// ============================================================
+// ===============================
 
 const auditLog = [];
-const MAX_AUDIT_LOG = 1000;
+
+const MAX_AUDIT_LOG_SIZE = 1000;
 
 function recordAuditEvent(type, data = {}) {
   const event = {
+    id: `AUDIT-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
     timestamp: new Date().toISOString(),
     type,
-    ...data
+    ...data,
   };
 
   auditLog.push(event);
 
-  if (auditLog.length > MAX_AUDIT_LOG) {
+  if (auditLog.length > MAX_AUDIT_LOG_SIZE) {
     auditLog.shift();
   }
 
-  console.log("AUDIT LOG:", JSON.stringify(event, null, 2));
+  console.log("[AUDIT]", JSON.stringify(event));
 
   return event;
 }
 
-// ============================================================
-// PHONE NUMBER HANDLING
-// ============================================================
+// ===============================
+// HUMAN AUTHORIZATION ENGINE
+// ===============================
+
+// Pending authorization requests.
+//
+// Map key = normalized admin phone number
+//
+// Example:
+//
+// sender -> {
+//   task,
+//   originalText,
+//   createdAt,
+//   expiresAt
+// }
+
+const pendingAuthorizations = new Map();
+
+const AUTHORIZATION_TIMEOUT_MS = 5 * 60 * 1000;
+
+// ===============================
+// WHATSAPP NUMBER NORMALIZATION
+// ===============================
 
 function normalizeWhatsAppNumber(number) {
-  if (!number) {
-    return null;
+  if (!number) return "";
+
+  let normalized = String(number).replace(/\D/g, "");
+
+  // Convert Nigerian local format:
+  // 08012345678
+  // into:
+  // 2348012345678
+
+  if (normalized.startsWith("0")) {
+    normalized = "234" + normalized.substring(1);
   }
 
-  let value = String(number).trim();
-
-  // Remove spaces, brackets, hyphens and plus signs.
-  value = value.replace(/[^\d]/g, "");
-
-  // Nigerian local format:
-  // 08117575320 -> 2348117575320
-  if (value.startsWith("0")) {
-    value = "234" + value.substring(1);
-  }
-
-  // Nigerian number already in international format:
-  // 2348117575320 -> remains 2348117575320
-  if (value.startsWith("234")) {
-    return value;
-  }
-
-  return value;
+  return normalized;
 }
 
-// ============================================================
-// ADMIN AUTHORIZATION
-// ============================================================
+// ===============================
+// ADMIN CHECK
+// ===============================
 
 function isAdmin(sender) {
   const normalizedSender = normalizeWhatsAppNumber(sender);
   const normalizedAdmin = normalizeWhatsAppNumber(ADMIN_PHONE_NUMBER);
 
-  if (!normalizedSender || !normalizedAdmin) {
-    return false;
-  }
-
-  return normalizedSender === normalizedAdmin;
+  return (
+    normalizedSender &&
+    normalizedAdmin &&
+    normalizedSender === normalizedAdmin
+  );
 }
 
-// ============================================================
-// EMERGENCY STOP
-// ============================================================
+// ===============================
+// AUTHORIZATION HELPERS
+// ===============================
 
-function handleControlCommand(sender, text) {
-  const command = String(text || "").trim().toUpperCase();
+function clearAuthorization(sender, reason = "cleared") {
+  const normalizedSender = normalizeWhatsAppNumber(sender);
 
-  if (!["STOP", "RESUME", "STATUS"].includes(command)) {
+  const existing = pendingAuthorizations.get(normalizedSender);
+
+  if (!existing) {
     return null;
   }
 
-  if (!isAdmin(sender)) {
-    recordAuditEvent("UNAUTHORIZED_CONTROL_ATTEMPT", {
-      sender,
-      command
+  pendingAuthorizations.delete(normalizedSender);
+
+  recordAuditEvent("AUTHORIZATION_CLEARED", {
+    sender: normalizedSender,
+    task: existing.task,
+    reason,
+  });
+
+  return existing;
+}
+
+function createAuthorizationRequest(sender, task, originalText) {
+  const normalizedSender = normalizeWhatsAppNumber(sender);
+
+  // Replace any existing request from this sender.
+  if (pendingAuthorizations.has(normalizedSender)) {
+    clearAuthorization(sender, "replaced_by_new_request");
+  }
+
+  const createdAt = Date.now();
+  const expiresAt = createdAt + AUTHORIZATION_TIMEOUT_MS;
+
+  const request = {
+    sender: normalizedSender,
+    task,
+    originalText,
+    createdAt,
+    expiresAt,
+  };
+
+  pendingAuthorizations.set(normalizedSender, request);
+
+  const audit = recordAuditEvent("AUTHORIZATION_PROPOSED", {
+    sender: normalizedSender,
+    task,
+    originalText,
+    expiresAt: new Date(expiresAt).toISOString(),
+  });
+
+  return {
+    ...request,
+    auditId: audit.id,
+  };
+}
+
+function getPendingAuthorization(sender) {
+  const normalizedSender = normalizeWhatsAppNumber(sender);
+
+  const request = pendingAuthorizations.get(normalizedSender);
+
+  if (!request) {
+    return null;
+  }
+
+  // Check expiration.
+  if (Date.now() > request.expiresAt) {
+    pendingAuthorizations.delete(normalizedSender);
+
+    recordAuditEvent("AUTHORIZATION_EXPIRED", {
+      sender: normalizedSender,
+      task: request.task,
     });
 
-    return "Authorization required. This control command is restricted.";
+    return null;
   }
+
+  return request;
+}
+
+// ===============================
+// CONTROL COMMANDS
+// ===============================
+
+function isControlCommand(text) {
+  const command = String(text || "").trim().toUpperCase();
+
+  return (
+    command === "STOP" ||
+    command === "RESUME" ||
+    command === "STATUS" ||
+    command === "APPROVE" ||
+    command === "DENY"
+  );
+}
+
+async function handleControlCommand(sender, text) {
+  const command = String(text || "").trim().toUpperCase();
+
+  // --------------------------------
+  // APPROVE
+  // --------------------------------
+
+  if (command === "APPROVE") {
+    if (!isAdmin(sender)) {
+      recordAuditEvent("UNAUTHORIZED_APPROVAL_ATTEMPT", {
+        sender: normalizeWhatsAppNumber(sender),
+      });
+
+      return "⛔ Authorization denied. Only an authorized human administrator can approve actions.";
+    }
+
+    const pending = getPendingAuthorization(sender);
+
+    if (!pending) {
+      return "ℹ️ No pending authorization request was found.";
+    }
+
+    if (SYSTEM_STATE.emergencyStop) {
+      clearAuthorization(sender, "emergency_stop_active");
+
+      return (
+        "🛑 APPROVAL BLOCKED\n\n" +
+        "The Emergency Stop is active.\n" +
+        "The pending action has been cancelled.\n\n" +
+        "RESUME the system and submit the command again."
+      );
+    }
+
+    recordAuditEvent("AUTHORIZATION_APPROVED", {
+      sender: normalizeWhatsAppNumber(sender),
+      task: pending.task,
+      originalText: pending.originalText,
+    });
+
+    // Remove pending request before execution.
+    pendingAuthorizations.delete(normalizeWhatsAppNumber(sender));
+
+    try {
+      if (pending.task === "robotics") {
+        return await executeRobotTask(
+          sender,
+          pending.originalText,
+          {
+            authorized: true,
+            authorizationId: `AUTH-${Date.now()}`,
+          }
+        );
+      }
+
+      return "⚠️ Approved action type is not currently executable.";
+    } catch (error) {
+      recordAuditEvent("AUTHORIZED_ACTION_ERROR", {
+        sender: normalizeWhatsAppNumber(sender),
+        task: pending.task,
+        error: error.message,
+      });
+
+      throw error;
+    }
+  }
+
+  // --------------------------------
+  // DENY
+  // --------------------------------
+
+  if (command === "DENY") {
+    if (!isAdmin(sender)) {
+      recordAuditEvent("UNAUTHORIZED_DENIAL_ATTEMPT", {
+        sender: normalizeWhatsAppNumber(sender),
+      });
+
+      return "⛔ Only an authorized administrator can deny pending actions.";
+    }
+
+    const pending = getPendingAuthorization(sender);
+
+    if (!pending) {
+      return "ℹ️ No pending authorization request was found.";
+    }
+
+    pendingAuthorizations.delete(normalizeWhatsAppNumber(sender));
+
+    recordAuditEvent("AUTHORIZATION_DENIED", {
+      sender: normalizeWhatsAppNumber(sender),
+      task: pending.task,
+      originalText: pending.originalText,
+    });
+
+    return (
+      "❌ ACTION DENIED\n\n" +
+      `Task: ${pending.originalText}\n` +
+      "Status: Cancelled\n" +
+      "No action was executed."
+    );
+  }
+
+  // --------------------------------
+  // STOP
+  // --------------------------------
 
   if (command === "STOP") {
+    if (!isAdmin(sender)) {
+      recordAuditEvent("UNAUTHORIZED_STOP_ATTEMPT", {
+        sender: normalizeWhatsAppNumber(sender),
+      });
+
+      return "⛔ STOP command denied. Only the authorized administrator can control the system.";
+    }
+
     SYSTEM_STATE.emergencyStop = true;
 
+    // Safety rule:
+    // Any pending authorization is cancelled
+    // when Emergency Stop is activated.
+
+    if (pendingAuthorizations.size > 0) {
+      for (const [pendingSender, pending] of pendingAuthorizations.entries()) {
+        recordAuditEvent("AUTHORIZATION_CANCELLED_BY_EMERGENCY_STOP", {
+          sender: pendingSender,
+          task: pending.task,
+        });
+      }
+
+      pendingAuthorizations.clear();
+    }
+
     recordAuditEvent("EMERGENCY_STOP_ACTIVATED", {
-      sender
+      sender: normalizeWhatsAppNumber(sender),
     });
 
-    return [
-      "🛑 EMERGENCY STOP ACTIVE",
-      "",
-      "AI execution is stopped.",
-      "Robot task execution is stopped.",
-      "Control commands remain available.",
-      "",
-      "Send RESUME to restore normal operation."
-    ].join("\n");
+    return (
+      "🛑 EMERGENCY STOP ACTIVATED\n\n" +
+      "All executable actions are now blocked.\n" +
+      "Pending authorizations have been cancelled.\n\n" +
+      "System remains under human control."
+    );
   }
 
+  // --------------------------------
+  // RESUME
+  // --------------------------------
+
   if (command === "RESUME") {
+    if (!isAdmin(sender)) {
+      recordAuditEvent("UNAUTHORIZED_RESUME_ATTEMPT", {
+        sender: normalizeWhatsAppNumber(sender),
+      });
+
+      return "⛔ RESUME command denied. Only the authorized administrator can control the system.";
+    }
+
     SYSTEM_STATE.emergencyStop = false;
 
     recordAuditEvent("EMERGENCY_STOP_RELEASED", {
-      sender
+      sender: normalizeWhatsAppNumber(sender),
     });
 
-    return [
-      "✅ SYSTEM RESUMED",
-      "",
-      "AI execution is available.",
-      "Robot task execution is available.",
-      "Emergency stop is OFF."
-    ].join("\n");
+    return (
+      "🟢 SYSTEM RESUMED\n\n" +
+      "Emergency Stop: OFF\n" +
+      "The system is ready for new authorized tasks."
+    );
   }
 
+  // --------------------------------
+  // STATUS
+  // --------------------------------
+
   if (command === "STATUS") {
+    if (!isAdmin(sender)) {
+      recordAuditEvent("UNAUTHORIZED_STATUS_ATTEMPT", {
+        sender: normalizeWhatsAppNumber(sender),
+      });
+
+      return "⛔ STATUS access denied.";
+    }
+
+    const pending = getPendingAuthorization(sender);
+
     recordAuditEvent("STATUS_REQUESTED", {
-      sender
+      sender: normalizeWhatsAppNumber(sender),
     });
 
-    return [
-      "🧠 SILENT STRATEGIST STATUS",
-      "",
-      `System: ONLINE`,
-      `Policy Engine: ACTIVE`,
-      `AI Router: ACTIVE`,
-      `Verification: ACTIVE`,
-      `Audit Logging: ACTIVE`,
-      `Emergency Stop: ${
-        SYSTEM_STATE.emergencyStop ? "ACTIVE" : "OFF"
-      }`,
-      `Robot Controller: ACTIVE`,
-      `Robot Mode: SIMULATION`,
-      `Policy Version: ${POLICY.version}`,
-      `Robot Battery: ${ROBOT_STATE.battery}%`,
-      `Robot Status: ${ROBOT_STATE.status}`
-    ].join("\n");
+    return (
+      "🧠 SILENT STRATEGIST STATUS\n\n" +
+
+      `System: ONLINE\n` +
+      `Policy Engine: ACTIVE\n` +
+      `AI Router: ACTIVE\n` +
+      `Verification: ACTIVE\n` +
+      `Audit Logging: ACTIVE\n` +
+      `Human Authorization: ACTIVE\n` +
+      `Emergency Stop: ${SYSTEM_STATE.emergencyStop ? "ON" : "OFF"}\n` +
+
+      `Robot Controller: ACTIVE\n` +
+      `Robot Mode: ${POLICY.capabilities.robotics.mode.toUpperCase()}\n` +
+
+      `Policy Version: ${POLICY.version}\n` +
+
+      `Robot Battery: ${ROBOT_STATE.battery}%\n` +
+      `Robot Status: ${ROBOT_STATE.status}\n` +
+
+      `Pending Authorization: ${pending ? "YES" : "NO"}`
+    );
   }
 
   return null;
 }
 
-// ============================================================
+// ===============================
 // AI CAPABILITY REGISTRY
-// ============================================================
+// ===============================
 
 const AI_CAPABILITIES = {
   reasoning: {
-    name: "Reasoning",
     enabled: true,
     provider: "openai",
-    model: "gpt-4o-mini"
+    model: "gpt-4o-mini",
   },
 
   image: {
-    name: "Image",
-    enabled: false
+    enabled: false,
   },
 
   speech: {
-    name: "Speech",
-    enabled: false
+    enabled: false,
   },
 
   coding: {
-    name: "Coding",
-    enabled: false
+    enabled: false,
   },
 
   research: {
-    name: "Research",
-    enabled: false
+    enabled: false,
   },
 
   robotics: {
-    name: "Robotics",
     enabled: true,
-    mode: "simulation"
-  }
+    mode: "simulation",
+  },
 };
 
-// ============================================================
+// ===============================
 // TASK CLASSIFIER
-// ============================================================
+// ===============================
 
-function classifyTask(text) {
-  const message = String(text || "").trim();
+function isRobotCommand(text) {
+  const normalized = String(text || "")
+    .trim()
+    .toUpperCase();
 
-  if (!message) {
-    return {
-      type: "unknown",
-      capability: null
-    };
-  }
-
-  const upper = message.toUpperCase();
-
-  if (isRobotCommand(upper)) {
-    return {
-      type: "robot",
-      capability: "robotics"
-    };
-  }
-
-  return {
-    type: "reasoning",
-    capability: "reasoning"
-  };
+  return (
+    normalized === "GO TO CHARGING STATION" ||
+    normalized === "GO TO THE CHARGING STATION"
+  );
 }
 
-// ============================================================
-// POLICY ENGINE
-// ============================================================
+function classifyTask(text) {
+  if (isRobotCommand(text)) {
+    return "robotics";
+  }
+
+  return "reasoning";
+}
+
+// ===============================
+// POLICY EVALUATION
+// ===============================
 
 function evaluatePolicy(sender, task) {
+  // Emergency stop blocks all executable tasks.
   if (SYSTEM_STATE.emergencyStop) {
     return {
       allowed: false,
-      reason: "Emergency stop is active."
+      reason: "Emergency Stop is active.",
     };
   }
 
-  if (!task || !task.capability) {
+  if (!AI_CAPABILITIES[task]) {
     return {
       allowed: false,
-      reason: "No valid capability identified."
+      reason: `Capability "${task}" does not exist.`,
     };
   }
 
-  const capability = AI_CAPABILITIES[task.capability];
-
-  if (!capability) {
+  if (!AI_CAPABILITIES[task].enabled) {
     return {
       allowed: false,
-      reason: "Capability does not exist."
+      reason: `Capability "${task}" is disabled.`,
     };
   }
 
-  if (!capability.enabled) {
-    return {
-      allowed: false,
-      reason: `Capability '${task.capability}' is disabled.`
-    };
-  }
+  // Robotics are sensitive actions.
+  if (task === "robotics") {
+    if (!isAdmin(sender)) {
+      return {
+        allowed: false,
+        reason: "Robot actions require an authorized administrator.",
+      };
+    }
 
-  if (task.type === "robot" && !isAdmin(sender)) {
     return {
-      allowed: false,
-      reason: "Robot control requires administrator authorization."
+      allowed: true,
+      requiresAuthorization:
+        POLICY.requireAuthorizationForSensitiveActions,
     };
   }
 
   return {
     allowed: true,
-    reason: "Policy approved."
+    requiresAuthorization: false,
   };
 }
 
-// ============================================================
+// ===============================
 // AI ROUTER
-// ============================================================
+// ===============================
 
 function routeAI(task) {
-  if (!task || !task.capability) {
-    return null;
-  }
-
-  const capability = AI_CAPABILITIES[task.capability];
+  const capability = AI_CAPABILITIES[task];
 
   if (!capability || !capability.enabled) {
-    return null;
+    throw new Error(`AI capability unavailable: ${task}`);
   }
 
-  if (capability.provider === "openai") {
-    return {
-      provider: "openai",
-      model: capability.model
-    };
-  }
-
-  return null;
+  return {
+    provider: capability.provider,
+    model: capability.model,
+  };
 }
 
-// ============================================================
-// OPENAI PROVIDER
-// ============================================================
+// ===============================
+// OPENAI REASONING
+// ===============================
 
 async function askOpenAI(text) {
   if (!openai) {
@@ -378,77 +605,75 @@ async function askOpenAI(text) {
   }
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: AI_CAPABILITIES.reasoning.model,
 
     messages: [
       {
         role: "system",
         content:
-          "You are the reasoning component of The Silent Strategist AI. Follow the system's policy and human-authority boundaries. Give useful, clear and responsible answers."
+          "You are the reasoning component of The Silent Strategist AI. " +
+          "Follow the system's policy and human-authority boundaries. " +
+          "Give useful, clear and responsible answers. " +
+          "Do not claim authority over the human operator. " +
+          "AI can recommend; human authority decides.",
       },
+
       {
         role: "user",
-        content: text
-      }
+        content: text,
+      },
     ],
-
-    temperature: 0.7
   });
 
-  return response.choices?.[0]?.message?.content?.trim() || "";
+  return response.choices?.[0]?.message?.content || "";
 }
 
-// ============================================================
-// PROVIDER DISPATCHER
-// ============================================================
+// ===============================
+// PROVIDER DISPATCH
+// ===============================
 
 async function dispatchToProvider(route, text) {
-  if (!route) {
-    throw new Error("No AI route available.");
-  }
-
   if (route.provider === "openai") {
     return await askOpenAI(text);
   }
 
-  throw new Error(`Unsupported AI provider: ${route.provider}`);
+  throw new Error(`Unsupported provider: ${route.provider}`);
 }
 
-// ============================================================
-// RESPONSE VERIFICATION
-// ============================================================
+// ===============================
+// AI RESPONSE VERIFICATION
+// ===============================
 
 function verifyAIResponse(response) {
   if (!response || typeof response !== "string") {
     return {
-      verified: false,
-      reason: "Empty or invalid AI response."
+      valid: false,
+      reason: "AI returned an empty or invalid response.",
     };
   }
 
   if (response.length > 10000) {
     return {
-      verified: false,
-      reason: "Response exceeds safety length limit."
+      valid: false,
+      reason: "AI response exceeded the maximum allowed length.",
     };
   }
 
   return {
-    verified: true,
-    reason: "Response passed basic verification."
+    valid: true,
   };
 }
 
-// ============================================================
-// ROBOT CONTROLLER
-// ============================================================
+// ===============================
+// ROBOT SIMULATION
+// ===============================
 
 const ROBOT_STATE = {
   id: "silent-strategist-robot-01",
 
   position: {
     x: 0,
-    y: 0
+    y: 0,
   },
 
   battery: 100,
@@ -457,781 +682,816 @@ const ROBOT_STATE = {
 
   destination: null,
 
-  lastTask: null
+  lastTask: null,
 };
 
-const ROBOT_LOCATIONS = {
-  chargingStation: {
-    name: "Charging Station",
-    x: 5,
-    y: 5
-  }
+const CHARGING_STATION = {
+  x: 5,
+  y: 5,
 };
 
-function getRobotStatus() {
-  return {
-    id: ROBOT_STATE.id,
-
-    position: {
-      ...ROBOT_STATE.position
-    },
-
-    battery: ROBOT_STATE.battery,
-
-    status: ROBOT_STATE.status,
-
-    destination: ROBOT_STATE.destination,
-
-    lastTask: ROBOT_STATE.lastTask
-  };
-}
-
-function isRobotCommand(text) {
-  const upper = String(text || "").trim().toUpperCase();
-
-  return (
-    upper === "GO TO CHARGING STATION" ||
-    upper === "GO TO THE CHARGING STATION"
-  );
-}
+// ===============================
+// ROBOT ROUTE PLANNER
+// ===============================
 
 function calculateRobotRoute(start, destination) {
   const route = [];
 
-  let x = start.x;
-  let y = start.y;
+  let currentX = start.x;
+  let currentY = start.y;
 
-  while (x !== destination.x) {
-    x += x < destination.x ? 1 : -1;
+  while (currentX !== destination.x) {
+    currentX += destination.x > currentX ? 1 : -1;
 
     route.push({
-      x,
-      y
+      x: currentX,
+      y: currentY,
     });
   }
 
-  while (y !== destination.y) {
-    y += y < destination.y ? 1 : -1;
+  while (currentY !== destination.y) {
+    currentY += destination.y > currentY ? 1 : -1;
 
     route.push({
-      x,
-      y
+      x: currentX,
+      y: currentY,
     });
   }
 
   return route;
 }
 
-async function executeRobotTask(sender, text) {
+// ===============================
+// ROBOT EXECUTION
+// ===============================
+
+async function executeRobotTask(sender, text, options = {}) {
+  const normalizedSender = normalizeWhatsAppNumber(sender);
+
   if (!isAdmin(sender)) {
-    recordAuditEvent("ROBOT_UNAUTHORIZED", {
-      sender,
-      task: text
+    recordAuditEvent("UNAUTHORIZED_ROBOT_EXECUTION_ATTEMPT", {
+      sender: normalizedSender,
+      command: text,
     });
 
-    return "Authorization required. Robot control is restricted to the administrator.";
+    return "⛔ Robot command denied. Administrator authorization is required.";
+  }
+
+  if (!options.authorized) {
+    recordAuditEvent("ROBOT_EXECUTION_BLOCKED_NO_AUTHORIZATION", {
+      sender: normalizedSender,
+      command: text,
+    });
+
+    return "⛔ Robot action cannot execute without explicit human authorization.";
   }
 
   if (SYSTEM_STATE.emergencyStop) {
-    return "🛑 Robot task blocked. Emergency stop is active.";
-  }
-
-  if (ROBOT_STATE.battery < 10) {
-    recordAuditEvent("ROBOT_TASK_BLOCKED_LOW_BATTERY", {
-      sender,
-      battery: ROBOT_STATE.battery
+    recordAuditEvent("ROBOT_EXECUTION_BLOCKED_EMERGENCY_STOP", {
+      sender: normalizedSender,
+      command: text,
     });
 
-    return `🔋 Robot task blocked. Battery is too low: ${ROBOT_STATE.battery}%.`;
+    return "🛑 Robot execution blocked because Emergency Stop is active.";
   }
 
-  const destination = ROBOT_LOCATIONS.chargingStation;
+  if (ROBOT_STATE.battery <= 0) {
+    return "🔋 Robot cannot move because battery is empty.";
+  }
 
-  ROBOT_STATE.destination = destination.name;
-  ROBOT_STATE.lastTask = text;
-  ROBOT_STATE.status = "PLANNING";
+  const destination = CHARGING_STATION;
 
   const route = calculateRobotRoute(
     ROBOT_STATE.position,
     destination
   );
 
-  recordAuditEvent("ROBOT_TASK_PLANNED", {
-    sender,
-    task: text,
+  ROBOT_STATE.status = "MOVING";
+  ROBOT_STATE.destination = destination;
+  ROBOT_STATE.lastTask = text;
+
+  recordAuditEvent("ROBOT_ACTION_STARTED", {
+    sender: normalizedSender,
+    command: text,
     destination,
-    routeLength: route.length
+    routeLength: route.length,
+    authorizationId: options.authorizationId || null,
   });
 
-  ROBOT_STATE.status = "MOVING";
-
+  // Simulated movement.
   for (const step of route) {
+    // Emergency stop is checked during execution.
     if (SYSTEM_STATE.emergencyStop) {
       ROBOT_STATE.status = "STOPPED";
 
-      recordAuditEvent("ROBOT_TASK_INTERRUPTED", {
-        sender,
-        reason: "Emergency stop activated.",
-        position: ROBOT_STATE.position
+      ROBOT_STATE.destination = null;
+
+      recordAuditEvent("ROBOT_ACTION_INTERRUPTED", {
+        sender: normalizedSender,
+        reason: "Emergency Stop activated during execution.",
       });
 
-      return [
-        "🛑 ROBOT STOPPED",
-        "",
-        "Emergency stop was activated during movement.",
-        `Current position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})`,
-        `Battery: ${ROBOT_STATE.battery}%`
-      ].join("\n");
+      return (
+        "🛑 ROBOT ACTION INTERRUPTED\n\n" +
+        "Emergency Stop was activated.\n" +
+        `Robot position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})`
+      );
     }
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
     ROBOT_STATE.position = {
       x: step.x,
-      y: step.y
+      y: step.y,
     };
 
+    // Simulate small battery usage.
     ROBOT_STATE.battery = Math.max(
       0,
       ROBOT_STATE.battery - 1
     );
 
-    await new Promise((resolve) =>
-      setTimeout(resolve, 150)
+    console.log(
+      `[ROBOT] Position: (${step.x}, ${step.y}) Battery: ${ROBOT_STATE.battery}%`
     );
   }
 
-  const reachedDestination =
+  // ===============================
+  // VERIFY DESTINATION
+  // ===============================
+
+  const destinationVerified =
     ROBOT_STATE.position.x === destination.x &&
     ROBOT_STATE.position.y === destination.y;
 
-  if (!reachedDestination) {
+  if (!destinationVerified) {
     ROBOT_STATE.status = "ERROR";
+    ROBOT_STATE.destination = null;
 
     recordAuditEvent("ROBOT_VERIFICATION_FAILED", {
-      sender,
-      position: ROBOT_STATE.position,
-      destination
+      sender: normalizedSender,
+      expectedDestination: destination,
+      actualPosition: ROBOT_STATE.position,
     });
 
-    return "❌ Robot verification failed. Destination was not reached.";
+    return (
+      "⚠️ ROBOT VERIFICATION FAILED\n\n" +
+      "The robot did not reach the expected destination."
+    );
   }
+
+  // ===============================
+  // CHARGE SIMULATION
+  // ===============================
 
   ROBOT_STATE.status = "CHARGING";
 
-  recordAuditEvent("ROBOT_DESTINATION_VERIFIED", {
-    sender,
-    destination,
-    position: ROBOT_STATE.position
-  });
+  await new Promise((resolve) => setTimeout(resolve, 500));
 
-  // Simulation of charging.
   ROBOT_STATE.battery = 100;
 
   ROBOT_STATE.status = "IDLE";
 
-  recordAuditEvent("ROBOT_TASK_COMPLETED", {
-    sender,
-    task: text,
+  ROBOT_STATE.destination = null;
+
+  // ===============================
+  // FINAL AUDIT
+  // ===============================
+
+  const audit = recordAuditEvent("ROBOT_ACTION_COMPLETED", {
+    sender: normalizedSender,
+    command: text,
     destination,
-    finalPosition: ROBOT_STATE.position,
-    battery: ROBOT_STATE.battery
+    verification: "PASSED",
+    battery: ROBOT_STATE.battery,
+    authorizationId: options.authorizationId || null,
   });
 
-  return [
-    "🤖 ROBOT TASK COMPLETE",
-    "",
-    `Destination: ${destination.name}`,
-    `Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})`,
-    `Battery: ${ROBOT_STATE.battery}%`,
-    "Verification: PASSED",
-    "Status: IDLE",
-    "",
-    "Task recorded in audit log."
-  ].join("\n");
+  return (
+    "✅ ACTION COMPLETED\n\n" +
+    "🤖 Robot Task: Go to Charging Station\n" +
+    "Mode: Simulation\n" +
+    `Destination: (${destination.x}, ${destination.y})\n` +
+    `Final Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})\n` +
+    "Verification: PASSED\n" +
+    `Battery: ${ROBOT_STATE.battery}%\n` +
+    `Audit ID: ${audit.id}`
+  );
 }
 
-// ============================================================
-// ORCHESTRATOR
-// ============================================================
+// ===============================
+// MAIN MESSAGE PROCESSOR
+// ===============================
 
 async function processMessage(sender, text) {
+  const normalizedSender = normalizeWhatsAppNumber(sender);
+
+  // ===============================
+  // EMERGENCY STOP
+  // ===============================
+
   if (SYSTEM_STATE.emergencyStop) {
-    return "🛑 Emergency stop is active. Send RESUME to restore normal AI execution.";
+    return (
+      "🛑 SYSTEM LOCKED\n\n" +
+      "Emergency Stop is active.\n" +
+      "No executable actions are permitted.\n\n" +
+      "Only the authorized administrator can use RESUME."
+    );
   }
+
+  // ===============================
+  // CLASSIFY
+  // ===============================
 
   const task = classifyTask(text);
 
   recordAuditEvent("TASK_CLASSIFIED", {
-    sender,
+    sender: normalizedSender,
     text,
-    task
+    task,
   });
+
+  // ===============================
+  // POLICY
+  // ===============================
 
   const policyResult = evaluatePolicy(sender, task);
 
   recordAuditEvent("POLICY_EVALUATED", {
-    sender,
+    sender: normalizedSender,
     task,
     allowed: policyResult.allowed,
-    reason: policyResult.reason
+    requiresAuthorization:
+      policyResult.requiresAuthorization || false,
+    reason: policyResult.reason || null,
   });
 
   if (!policyResult.allowed) {
-    return `Request blocked: ${policyResult.reason}`;
+    return (
+      "⛔ ACTION BLOCKED\n\n" +
+      `Reason: ${policyResult.reason}`
+    );
   }
 
-  // Robot tasks are handled by the robot controller.
-  if (task.type === "robot") {
-    return await executeRobotTask(sender, text);
+  // ===============================
+  // SENSITIVE ACTION
+  // ===============================
+
+  if (
+    task === "robotics" &&
+    policyResult.requiresAuthorization
+  ) {
+    const authorization = createAuthorizationRequest(
+      sender,
+      task,
+      text
+    );
+
+    const route = calculateRobotRoute(
+      ROBOT_STATE.position,
+      CHARGING_STATION
+    );
+
+    return (
+      "🤖 ACTION PROPOSED\n\n" +
+
+      "Task: Go to Charging Station\n" +
+
+      "Mode: Simulation\n" +
+
+      `Current Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})\n` +
+
+      `Destination: (${CHARGING_STATION.x}, ${CHARGING_STATION.y})\n` +
+
+      `Estimated Route: ${route.length} steps\n` +
+
+      `Current Battery: ${ROBOT_STATE.battery}%\n\n` +
+
+      "Authorization: REQUIRED\n\n" +
+
+      "Reply:\n" +
+
+      "APPROVE — execute the action\n" +
+
+      "DENY — cancel the action\n\n" +
+
+      `Authorization ID: ${authorization.auditId}\n` +
+
+      "This request expires in 5 minutes."
+    );
   }
+
+  // ===============================
+  // NORMAL AI REASONING
+  // ===============================
 
   const route = routeAI(task);
 
   recordAuditEvent("AI_ROUTE_SELECTED", {
-    sender,
+    sender: normalizedSender,
     task,
-    route
+    provider: route.provider,
+    model: route.model,
   });
 
   try {
-    const response = await dispatchToProvider(
-      route,
-      text
-    );
+    const response = await dispatchToProvider(route, text);
 
     const verification = verifyAIResponse(response);
 
-    recordAuditEvent("AI_RESPONSE_VERIFICATION", {
-      sender,
-      verified: verification.verified,
-      reason: verification.reason
-    });
+    if (!verification.valid) {
+      recordAuditEvent("AI_RESPONSE_REJECTED", {
+        sender: normalizedSender,
+        task,
+        reason: verification.reason,
+      });
 
-    if (!verification.verified) {
-      return "The AI response failed verification and was not released.";
+      return (
+        "⚠️ AI response failed verification.\n\n" +
+        `Reason: ${verification.reason}`
+      );
     }
 
-    recordAuditEvent("AI_RESPONSE_APPROVED", {
-      sender
+    const audit = recordAuditEvent("AI_RESPONSE_APPROVED", {
+      sender: normalizedSender,
+      task,
+      provider: route.provider,
+      model: route.model,
     });
+
+    console.log(`[AI] Response approved: ${audit.id}`);
 
     return response;
   } catch (error) {
     recordAuditEvent("AI_PROVIDER_ERROR", {
-      sender,
-      error: error.message
+      sender: normalizedSender,
+      task,
+      provider: route.provider,
+      error: error.message,
     });
 
     throw error;
   }
 }
 
-// ============================================================
-// WHATSAPP SENDER
-// ============================================================
+// ===============================
+// WHATSAPP MESSAGE SENDER
+// ===============================
 
 async function sendWhatsAppMessage(to, text) {
-  const recipient = normalizeWhatsAppNumber(to);
-
-  if (!recipient) {
-    throw new Error("Invalid WhatsApp recipient number.");
-  }
-
-  if (!WHATSAPP_ACCESS_TOKEN) {
-    throw new Error("WHATSAPP_ACCESS_TOKEN is not configured.");
-  }
-
-  if (!WHATSAPP_PHONE_NUMBER_ID) {
-    throw new Error("WHATSAPP_PHONE_NUMBER_ID is not configured.");
+  if (
+    !WHATSAPP_ACCESS_TOKEN ||
+    !WHATSAPP_PHONE_NUMBER_ID
+  ) {
+    throw new Error(
+      "WhatsApp credentials are not configured."
+    );
   }
 
   const url =
     `https://graph.facebook.com/v23.0/` +
     `${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
-  const payload = {
-    messaging_product: "whatsapp",
-
-    recipient_type: "individual",
-
-    to: recipient,
-
-    type: "text",
-
-    text: {
-      preview_url: false,
-      body: text
-    }
-  };
-
-  console.log("WhatsApp outgoing recipient:", recipient);
-
   const response = await fetch(url, {
     method: "POST",
 
     headers: {
       Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
 
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+
+      to,
+
+      type: "text",
+
+      text: {
+        body: text,
+      },
+    }),
   });
 
   const responseText = await response.text();
 
-  let data;
-
-  try {
-    data = JSON.parse(responseText);
-  } catch {
-    data = {
-      raw: responseText
-    };
-  }
-
   console.log(
-    "WhatsApp API response:",
-    JSON.stringify(data, null, 2)
+    "[WHATSAPP API RESPONSE]",
+    response.status,
+    responseText
   );
 
   if (!response.ok) {
     throw new Error(
-      `WhatsApp API failed: ${JSON.stringify(data)}`
+      `WhatsApp API error ${response.status}: ${responseText}`
     );
   }
 
-  return data;
+  return responseText;
 }
 
-// ============================================================
+// ===============================
 // HTTP SERVER
-// ============================================================
+// ===============================
 
 const server = http.createServer(async (req, res) => {
-  try {
-    // --------------------------------------------------------
-    // HEALTH CHECK
-    // --------------------------------------------------------
+  // ===============================
+  // HEALTH CHECK
+  // ===============================
 
-    if (req.method === "GET" && req.url === "/") {
+  if (req.method === "GET" && req.url === "/") {
+    res.writeHead(200, {
+      "Content-Type": "text/plain",
+    });
+
+    res.end(
+      "The Silent Strategist AI running on port " +
+      PORT +
+      "\n\n" +
+
+      "Policy Engine: ACTIVE\n" +
+      "Task Classifier: ACTIVE\n" +
+      "AI Capability Registry: ACTIVE\n" +
+      "AI Router: ACTIVE\n" +
+      "Provider Adapter: ACTIVE\n" +
+      "Verification: ACTIVE\n" +
+      "Audit Logging: ACTIVE\n" +
+      "Human Authorization: ACTIVE\n" +
+      "Emergency Stop: " +
+      (SYSTEM_STATE.emergencyStop ? "ON" : "OFF") +
+      "\n" +
+      "Robot Controller: ACTIVE\n" +
+      "Robot Mode: " +
+      POLICY.capabilities.robotics.mode.toUpperCase() +
+      "\n\n" +
+
+      "Policy Version: " +
+      POLICY.version +
+      "\n" +
+
+      "Robot Status: " +
+      ROBOT_STATE.status +
+      "\n" +
+
+      "Robot Battery: " +
+      ROBOT_STATE.battery +
+      "%\n"
+    );
+
+    return;
+  }
+  // ===============================
+  // CAPABILITIES ENDPOINT
+  // ===============================
+
+  if (
+    req.method === "GET" &&
+    req.url === "/capabilities"
+  ) {
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+    });
+
+    res.end(
+      JSON.stringify(
+        {
+          policy: POLICY,
+          capabilities: AI_CAPABILITIES,
+        },
+        null,
+        2
+      )
+    );
+
+    return;
+  }
+
+  // ===============================
+  // ROBOT STATUS ENDPOINT
+  // ===============================
+
+  if (
+    req.method === "GET" &&
+    req.url === "/robot"
+  ) {
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+    });
+
+    res.end(
+      JSON.stringify(
+        {
+          robot: ROBOT_STATE,
+          chargingStation: CHARGING_STATION,
+        },
+        null,
+        2
+      )
+    );
+
+    return;
+  }
+
+  // ===============================
+  // WEBHOOK VERIFICATION
+  // ===============================
+
+  if (
+    req.method === "GET" &&
+    req.url.startsWith("/webhook")
+  ) {
+    const url = new URL(
+      req.url,
+      `http://${req.headers.host}`
+    );
+
+    const mode = url.searchParams.get("hub.mode");
+    const token = url.searchParams.get("hub.verify_token");
+    const challenge =
+      url.searchParams.get("hub.challenge");
+
+    if (
+      mode === "subscribe" &&
+      token === WEBHOOK_VERIFY_TOKEN
+    ) {
+      console.log("Webhook verified successfully.");
+
       res.writeHead(200, {
-        "Content-Type": "text/plain"
+        "Content-Type": "text/plain",
       });
 
-      res.end(
-        [
-          "The Silent Strategist AI running on port " + PORT,
-          "",
-          "Policy Engine: ACTIVE",
-          "Task Classifier: ACTIVE",
-          "AI Capability Registry: ACTIVE",
-          "AI Router: ACTIVE",
-          "Provider Adapter Layer: ACTIVE",
-          "Verification Layer: ACTIVE",
-          "Audit Logging: ACTIVE",
-          "Emergency Stop: ACTIVE",
-          "Robot Controller: ACTIVE",
-          "",
-          `Policy Version: ${POLICY.version}`,
-          `Emergency Stop: ${
-            SYSTEM_STATE.emergencyStop
-              ? "ACTIVE"
-              : "OFF"
-          }`,
-          `Robot Status: ${ROBOT_STATE.status}`,
-          `Robot Battery: ${ROBOT_STATE.battery}%`
-        ].join("\n")
-      );
+      res.end(challenge);
 
       return;
     }
 
-    // --------------------------------------------------------
-    // CAPABILITIES
-    // --------------------------------------------------------
+    res.writeHead(403);
+    res.end("Forbidden");
 
-    if (
-      req.method === "GET" &&
-      req.url === "/capabilities"
-    ) {
-      res.writeHead(200, {
-        "Content-Type": "application/json"
-      });
+    return;
+  }
 
-      res.end(
-        JSON.stringify(
-          AI_CAPABILITIES,
-          null,
-          2
-        )
-      );
+  // ===============================
+  // WHATSAPP WEBHOOK
+  // ===============================
 
-      return;
-    }
+  if (
+    req.method === "POST" &&
+    req.url === "/webhook"
+  ) {
+    let body = "";
 
-    // --------------------------------------------------------
-    // ROBOT STATUS
-    // --------------------------------------------------------
+    req.on("data", (chunk) => {
+      body += chunk.toString();
+    });
 
-    if (
-      req.method === "GET" &&
-      req.url === "/robot"
-    ) {
-      res.writeHead(200, {
-        "Content-Type": "application/json"
-      });
+    req.on("end", async () => {
+      try {
+        const payload = JSON.parse(body);
 
-      res.end(
-        JSON.stringify(
-          getRobotStatus(),
-          null,
-          2
-        )
-      );
-
-      return;
-    }
-
-    // --------------------------------------------------------
-    // WEBHOOK VERIFICATION
-    // --------------------------------------------------------
-
-    if (
-      req.method === "GET" &&
-      req.url.startsWith("/webhook")
-    ) {
-      const url = new URL(
-        req.url,
-        `http://${req.headers.host}`
-      );
-
-      const mode =
-        url.searchParams.get("hub.mode");
-
-      const token =
-        url.searchParams.get("hub.verify_token");
-
-      const challenge =
-        url.searchParams.get("hub.challenge");
-
-      if (
-        mode === "subscribe" &&
-        token === WEBHOOK_VERIFY_TOKEN
-      ) {
         console.log(
-          "Webhook verified successfully."
+          "[WEBHOOK] Incoming payload received."
         );
 
-        res.writeHead(200, {
-          "Content-Type": "text/plain"
-        });
+        if (payload.object !== "whatsapp_business_account") {
+          res.writeHead(200);
+          res.end("EVENT_RECEIVED");
+          return;
+        }
 
-        res.end(challenge);
+        const entries = payload.entry || [];
 
-        return;
-      }
+        for (const entry of entries) {
+          const changes = entry.changes || [];
 
-      res.writeHead(403);
-      res.end("Forbidden");
+          for (const change of changes) {
+            const value = change.value || {};
 
-      return;
-    }
+            const messages = value.messages || [];
 
-    // --------------------------------------------------------
-    // WEBHOOK POST
-    // --------------------------------------------------------
+            for (const message of messages) {
+              const sender = message.from;
 
-    if (
-      req.method === "POST" &&
-      req.url === "/webhook"
-    ) {
-      console.log(
-        "STEP 1: POST /webhook received"
-      );
+              // ===============================
+              // TEXT ONLY FOR NOW
+              // ===============================
 
-      let body = "";
-
-      req.on("data", (chunk) => {
-        body += chunk.toString();
-      });
-
-      req.on("end", async () => {
-        try {
-          const payload = JSON.parse(body);
-
-          console.log(
-            "Webhook payload received:",
-            JSON.stringify(
-              payload,
-              null,
-              2
-            )
-          );
-
-          const entries =
-            payload.entry || [];
-
-          for (const entry of entries) {
-            const changes =
-              entry.changes || [];
-
-            for (const change of changes) {
-              const value =
-                change.value || {};
-
-              const messages =
-                value.messages || [];
-
-              for (const message of messages) {
-                if (message.type !== "text") {
-                  continue;
-                }
-
-                const sender =
-                  message.from;
-
-                const text =
-                  message.text?.body || "";
-
+              if (
+                message.type !== "text" ||
+                !message.text
+              ) {
                 console.log(
-                  "WhatsApp sender:",
-                  sender
+                  "[WEBHOOK] Non-text message ignored."
                 );
 
-                console.log(
-                  "WhatsApp message:",
-                  text
-                );
+                continue;
+              }
 
-                // ------------------------------------------------
-                // CONTROL COMMANDS
-                // ------------------------------------------------
+              const text =
+                message.text.body.trim();
 
-                const command =
-                  String(text)
-                    .trim()
-                    .toUpperCase();
+              console.log(
+                `[WHATSAPP] Message from ${sender}: ${text}`
+              );
 
-                if (
-                  ["STOP", "RESUME", "STATUS"]
-                    .includes(command)
-                ) {
+              // ===============================
+              // CONTROL COMMANDS
+              // ===============================
+
+              if (isControlCommand(text)) {
+                try {
                   const controlResponse =
-                    handleControlCommand(
+                    await handleControlCommand(
                       sender,
                       text
                     );
 
                   if (controlResponse) {
-                    console.log(
-                      "STEP 6: Sending WhatsApp reply..."
-                    );
-
-                    try {
-                      await sendWhatsAppMessage(
-                        sender,
-                        controlResponse
-                      );
-                    } catch (error) {
-                      console.error(
-                        "CONTROL RESPONSE ERROR:",
-                        error.message
-                      );
-
-                      recordAuditEvent(
-                        "CONTROL_RESPONSE_ERROR",
-                        {
-                          sender,
-                          error: error.message
-                        }
-                      );
-                    }
-
-                    continue;
-                  }
-                }
-
-                // ------------------------------------------------
-                // ROBOT COMMANDS
-                // ------------------------------------------------
-
-                if (isRobotCommand(text)) {
-                  try {
-                    const robotResponse =
-                      await executeRobotTask(
-                        sender,
-                        text
-                      );
-
-                    console.log(
-                      "STEP 6: Sending WhatsApp reply..."
-                    );
-
                     await sendWhatsAppMessage(
                       sender,
-                      robotResponse
-                    );
-                  } catch (error) {
-                    console.error(
-                      "ROBOT RESPONSE ERROR:",
-                      error.message
-                    );
-
-                    recordAuditEvent(
-                      "ROBOT_RESPONSE_ERROR",
-                      {
-                        sender,
-                        error: error.message
-                      }
+                      controlResponse
                     );
                   }
 
                   continue;
-                }
-
-                // ------------------------------------------------
-                // NORMAL AI MESSAGE
-                // ------------------------------------------------
-
-                try {
-                  const reply =
-                    await processMessage(
-                      sender,
-                      text
-                    );
-
-                  console.log(
-                    "STEP 6: Sending WhatsApp reply..."
+                } catch (error) {
+                  console.error(
+                    "[CONTROL ERROR]",
+                    error
                   );
 
                   await sendWhatsAppMessage(
                     sender,
-                    reply
-                  );
-                } catch (error) {
-                  console.error(
-                    "MESSAGE PROCESSING ERROR:",
-                    error.message
+                    "⚠️ Control command failed: " +
+                      error.message
                   );
 
-                  recordAuditEvent(
-                    "MESSAGE_PROCESSING_ERROR",
-                    {
-                      sender,
-                      error: error.message
-                    }
+                  continue;
+                }
+              }
+
+              // ===============================
+              // NORMAL MESSAGE
+              // ===============================
+
+              try {
+                const response =
+                  await processMessage(
+                    sender,
+                    text
                   );
 
-                  // Try to notify the user.
-                  try {
-                    await sendWhatsAppMessage(
-                      sender,
-                      "The Silent Strategist encountered an internal processing error. Check the system logs."
-                    );
-                  } catch (sendError) {
-                    console.error(
-                      "ERROR RESPONSE SEND FAILED:",
-                      sendError.message
-                    );
+                await sendWhatsAppMessage(
+                  sender,
+                  response
+                );
+              } catch (error) {
+                console.error(
+                  "[MESSAGE PROCESSING ERROR]",
+                  error
+                );
+
+                recordAuditEvent(
+                  "MESSAGE_PROCESSING_ERROR",
+                  {
+                    sender:
+                      normalizeWhatsAppNumber(
+                        sender
+                      ),
+                    text,
+                    error: error.message,
                   }
+                );
+
+                try {
+                  await sendWhatsAppMessage(
+                    sender,
+                    "⚠️ The Silent Strategist AI encountered an error while processing your request.\n\n" +
+                      "Check the system logs for details."
+                  );
+                } catch (sendError) {
+                  console.error(
+                    "[ERROR SENDING FAILURE MESSAGE]",
+                    sendError
+                  );
                 }
               }
             }
           }
+        }
 
-          // Acknowledge Meta immediately.
+        // ===============================
+        // ACKNOWLEDGE META
+        // ===============================
+
+        if (!res.headersSent) {
           res.writeHead(200, {
-            "Content-Type": "text/plain"
+            "Content-Type": "text/plain",
           });
 
           res.end("EVENT_RECEIVED");
-        } catch (error) {
-          console.error(
-            "Webhook processing error:",
-            error
-          );
+        }
+      } catch (error) {
+        console.error(
+          "[WEBHOOK ERROR]",
+          error
+        );
 
+        recordAuditEvent(
+          "WEBHOOK_ERROR",
+          {
+            error: error.message,
+          }
+        );
+
+        if (!res.headersSent) {
           res.writeHead(400, {
-            "Content-Type": "text/plain"
+            "Content-Type": "text/plain",
           });
 
-          res.end("Bad Request");
+          res.end("Invalid webhook payload");
         }
-      });
-
-      return;
-    }
-
-    // --------------------------------------------------------
-    // 404
-    // --------------------------------------------------------
-
-    res.writeHead(404, {
-      "Content-Type": "text/plain"
+      }
     });
 
-    res.end("Not Found");
-  } catch (error) {
-    console.error(
-      "Server error:",
-      error
-    );
+    return;
+                      }
+  // ===============================
+  // 404
+  // ===============================
 
-    if (!res.headersSent) {
-      res.writeHead(500, {
-        "Content-Type": "text/plain"
-      });
+  res.writeHead(404, {
+    "Content-Type": "text/plain",
+  });
 
-      res.end("Internal Server Error");
-    }
-  }
+  res.end("Not Found");
 });
 
-// ============================================================
+// ===============================
+// SERVER ERROR HANDLER
+// ===============================
+
+server.on("error", (error) => {
+  console.error(
+    "[SERVER ERROR]",
+    error
+  );
+});
+
+// ===============================
 // START SERVER
-// ============================================================
+// ===============================
 
 server.listen(PORT, () => {
   console.log(
-    `The Silent Strategist AI running on port ${PORT}`
+    "========================================"
   );
 
   console.log(
-    "Policy Engine: ACTIVE"
+    "THE SILENT STRATEGIST AI"
   );
 
   console.log(
-    "Task Classifier: ACTIVE"
+    "========================================"
   );
 
   console.log(
-    "AI Capability Registry: ACTIVE"
+    `Server running on port ${PORT}`
   );
 
   console.log(
-    "AI Router: ACTIVE"
+    `Policy Engine: ACTIVE`
   );
 
   console.log(
-    "Provider Adapter Layer: ACTIVE"
+    `Human Authority: ${POLICY.humanAuthority}`
   );
 
   console.log(
-    "Verification Layer: ACTIVE"
+    `Human Authorization: ACTIVE`
   );
 
   console.log(
-    "Audit Logging: ACTIVE"
+    `Audit Logging: ACTIVE`
   );
 
   console.log(
-    "Emergency Stop: ACTIVE"
+    `Emergency Stop: ${
+      SYSTEM_STATE.emergencyStop
+        ? "ON"
+        : "OFF"
+    }`
   );
 
   console.log(
-    "Robot Controller: ACTIVE"
+    `Robot Controller: ACTIVE`
   );
 
   console.log(
-    `Policy Version: ${POLICY.version}`
+    `Robot Mode: ${POLICY.capabilities.robotics.mode}`
+  );
+
+  console.log(
+    "========================================"
   );
 });
