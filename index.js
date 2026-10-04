@@ -1,10 +1,11 @@
 const http = require("http");
+const crypto = require("crypto");
 const OpenAI = require("openai");
 const { Pool } = require("pg");
 
 // ============================================================
 // THE SILENT STRATEGIST AI
-// ROBOTICS LAYER v1 — SIMULATION MODE
+// ROBOTICS LAYER v2 — SECURE CONTROLLER + SIMULATION MODE
 // ============================================================
 
 // ============================================================
@@ -30,6 +31,33 @@ const ADMIN_PHONE_NUMBER =
 
 const DATABASE_URL =
   process.env.DATABASE_URL;
+
+// New secure robot-controller secret.
+// Keep this ONLY in Render Environment Variables.
+const ROBOT_CONTROLLER_TOKEN =
+  process.env.ROBOT_CONTROLLER_TOKEN;
+
+// ============================================================
+// ROBOT CONTROLLER CONFIGURATION
+// ============================================================
+
+const ROBOT_CONTROLLER = {
+  enabled: Boolean(ROBOT_CONTROLLER_TOKEN),
+
+  mode: "simulation",
+
+  protocol: "authenticated-http",
+
+  version: "2.0.0",
+
+  heartbeatTimeoutMs: 30000,
+
+  lastHeartbeat: null,
+
+  connected: false,
+
+  hardwareConnected: false,
+};
 
 // ============================================================
 // POSTGRESQL
@@ -79,7 +107,7 @@ const openai = OPENAI_API_KEY
 // ============================================================
 
 const POLICY = {
-  version: "3.0.0",
+  version: "4.0.0",
 
   humanAuthority: true,
 
@@ -115,7 +143,7 @@ const POLICY = {
     robotics: {
       enabled: true,
       mode: "simulation",
-      version: "1.0.0",
+      version: "2.0.0",
     },
   },
 };
@@ -126,7 +154,8 @@ const POLICY = {
 
 const SYSTEM_STATE = {
   emergencyStop: false,
-  version: "3.0.0",
+
+  version: "4.0.0",
 };
 
 // ============================================================
@@ -143,6 +172,8 @@ const ROBOT_SAFETY = {
   simulationStepDelayMs: 150,
 
   batteryUsagePerStep: 1,
+
+  controllerHeartbeatTimeoutMs: 30000,
 };
 
 // ============================================================
@@ -322,6 +353,172 @@ function isAdmin(sender) {
 }
 
 // ============================================================
+// SECURE ROBOT CONTROLLER AUTHENTICATION
+// ============================================================
+
+function safeTokenCompare(
+  suppliedToken,
+  expectedToken
+) {
+  if (
+    !suppliedToken ||
+    !expectedToken
+  ) {
+    return false;
+  }
+
+  const supplied =
+    Buffer.from(
+      String(suppliedToken),
+      "utf8"
+    );
+
+  const expected =
+    Buffer.from(
+      String(expectedToken),
+      "utf8"
+    );
+
+  if (
+    supplied.length !==
+    expected.length
+  ) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(
+    supplied,
+    expected
+  );
+}
+
+function authenticateRobotController(
+  req
+) {
+  if (!ROBOT_CONTROLLER_TOKEN) {
+    return {
+      authenticated: false,
+
+      reason:
+        "Robot controller token is not configured.",
+    };
+  }
+
+  const authorization =
+    req.headers.authorization || "";
+
+  if (
+    !authorization.startsWith(
+      "Bearer "
+    )
+  ) {
+    return {
+      authenticated: false,
+
+      reason:
+        "Missing Bearer authentication.",
+    };
+  }
+
+  const suppliedToken =
+    authorization.substring(7).trim();
+
+  if (
+    !safeTokenCompare(
+      suppliedToken,
+      ROBOT_CONTROLLER_TOKEN
+    )
+  ) {
+    return {
+      authenticated: false,
+
+      reason:
+        "Invalid robot controller credentials.",
+    };
+  }
+
+  return {
+    authenticated: true,
+  };
+}
+
+// ============================================================
+// ROBOT CONTROLLER HEARTBEAT
+// ============================================================
+
+function registerRobotHeartbeat() {
+  ROBOT_CONTROLLER.lastHeartbeat =
+    new Date().toISOString();
+
+  ROBOT_CONTROLLER.connected =
+    true;
+
+  recordAuditEvent(
+    "ROBOT_CONTROLLER_HEARTBEAT",
+    {
+      robotId:
+        ROBOT_STATE.id,
+
+      mode:
+        ROBOT_CONTROLLER.mode,
+
+      hardwareConnected:
+        ROBOT_CONTROLLER.hardwareConnected,
+    }
+  );
+}
+
+function getRobotControllerHealth() {
+  let heartbeatHealthy = false;
+
+  if (
+    ROBOT_CONTROLLER.lastHeartbeat
+  ) {
+    const age =
+      Date.now() -
+      new Date(
+        ROBOT_CONTROLLER.lastHeartbeat
+      ).getTime();
+
+    heartbeatHealthy =
+      age <=
+      ROBOT_SAFETY
+        .controllerHeartbeatTimeoutMs;
+  }
+
+  return {
+    enabled:
+      ROBOT_CONTROLLER.enabled,
+
+    mode:
+      ROBOT_CONTROLLER.mode,
+
+    protocol:
+      ROBOT_CONTROLLER.protocol,
+
+    version:
+      ROBOT_CONTROLLER.version,
+
+    authenticated:
+      ROBOT_CONTROLLER.enabled,
+
+    heartbeat:
+      heartbeatHealthy
+        ? "HEALTHY"
+        : "WAITING",
+
+    lastHeartbeat:
+      ROBOT_CONTROLLER.lastHeartbeat,
+
+    hardwareConnected:
+      ROBOT_CONTROLLER.hardwareConnected,
+
+    emergencyStop:
+      SYSTEM_STATE.emergencyStop,
+  };
+}
+
+// ============================================================
 // AUTHORIZATION SYSTEM
 // ============================================================
 
@@ -485,10 +682,6 @@ function parseRobotCommand(text) {
   const normalized =
     original.toUpperCase();
 
-  // ----------------------------------------------------------
-  // ROBOT STATUS
-  // ----------------------------------------------------------
-
   if (
     normalized === "ROBOT STATUS" ||
     normalized === "ROBOT STATE"
@@ -498,10 +691,6 @@ function parseRobotCommand(text) {
     };
   }
 
-  // ----------------------------------------------------------
-  // ROBOT STOP
-  // ----------------------------------------------------------
-
   if (
     normalized === "ROBOT STOP"
   ) {
@@ -509,10 +698,6 @@ function parseRobotCommand(text) {
       type: "STOP",
     };
   }
-
-  // ----------------------------------------------------------
-  // ROBOT GO CHARGING
-  // ----------------------------------------------------------
 
   if (
     normalized ===
@@ -528,10 +713,6 @@ function parseRobotCommand(text) {
       type: "GO_CHARGING",
     };
   }
-
-  // ----------------------------------------------------------
-  // MOVE COMMANDS
-  // ----------------------------------------------------------
 
   const moveMatch =
     normalized.match(
@@ -549,10 +730,6 @@ function parseRobotCommand(text) {
         Number(moveMatch[2]),
     };
   }
-
-  // ----------------------------------------------------------
-  // TURN COMMANDS
-  // ----------------------------------------------------------
 
   const turnMatch =
     normalized.match(
@@ -724,6 +901,9 @@ function validateRobotCommand(
 // ============================================================
 
 function getRobotStatusText() {
+  const controllerHealth =
+    getRobotControllerHealth();
+
   return (
     "🤖 ROBOT STATUS\n\n" +
 
@@ -757,7 +937,21 @@ function getRobotStatusText() {
 
     "Safety Controller: ACTIVE\n" +
 
-    "Hardware Connection: NOT CONNECTED\n" +
+    `Secure Controller: ${
+      controllerHealth.enabled
+        ? "ACTIVE"
+        : "NOT CONFIGURED"
+    }\n` +
+
+    `Controller Heartbeat: ${
+      controllerHealth.heartbeat
+    }\n` +
+
+    `Hardware Connection: ${
+      ROBOT_CONTROLLER.hardwareConnected
+        ? "CONNECTED"
+        : "NOT CONNECTED"
+    }\n` +
 
     "Simulation: ACTIVE"
   );
@@ -954,7 +1148,7 @@ async function simulateMove(
         sender:
           normalizeWhatsAppNumber(
             sender
-          ),
+  ),
 
         command,
 
@@ -1086,8 +1280,7 @@ async function simulateTurn(
     `Orientation: ${ROBOT_STATE.orientation}°\n` +
     `Audit ID: ${audit.id}`
   );
-}
-
+    }
 // ============================================================
 // ROBOT CHARGING SIMULATION
 // ============================================================
@@ -1390,7 +1583,57 @@ async function executeRobotCommand(
   return (
     "⚠️ Robot command is not implemented."
   );
+      }
+  // ============================================================
+// ROBOT CONTROLLER DISPATCH
+// ============================================================
+
+async function robotControllerDispatch(
+  sender,
+  command,
+  authorizationId
+) {
+  recordAuditEvent(
+    "ROBOT_CONTROLLER_DISPATCH",
+    {
+      robotId:
+        ROBOT_STATE.id,
+
+      sender:
+        normalizeWhatsAppNumber(
+          sender
+        ),
+
+      command,
+
+      authorizationId:
+        authorizationId || null,
+
+      mode:
+        ROBOT_CONTROLLER.mode,
+    }
+  );
+
+  if (
+    ROBOT_CONTROLLER.mode ===
+    "simulation"
+  ) {
+    return await executeRobotCommand(
+      sender,
+      command,
+      {
+        authorized: true,
+
+        authorizationId,
+      }
+    );
+  }
+
+  return (
+    "⚠️ Hardware controller mode is not enabled."
+  );
 }
+
 // ============================================================
 // ROBOT COMMAND HELP
 // ============================================================
@@ -1458,10 +1701,6 @@ async function handleControlCommand(
     String(text || "")
       .trim()
       .toUpperCase();
-
-  // ----------------------------------------------------------
-  // APPROVE
-  // ----------------------------------------------------------
 
   if (
     command === "APPROVE"
@@ -1539,17 +1778,12 @@ async function handleControlCommand(
       pending.task ===
       "robotics"
     ) {
-      return await executeRobotCommand(
+      return await robotControllerDispatch(
         sender,
 
         pending.command,
 
-        {
-          authorized: true,
-
-          authorizationId:
-            `AUTH-${Date.now()}`,
-        }
+        `AUTH-${Date.now()}`
       );
     }
 
@@ -1557,10 +1791,6 @@ async function handleControlCommand(
       "⚠️ Approved action type is not executable."
     );
   }
-
-  // ----------------------------------------------------------
-  // DENY
-  // ----------------------------------------------------------
 
   if (
     command === "DENY"
@@ -1623,10 +1853,7 @@ async function handleControlCommand(
       "Status: Cancelled\n" +
       "No robot action was executed."
     );
-    }
-  // ----------------------------------------------------------
-  // STOP
-  // ----------------------------------------------------------
+  }
 
   if (
     command === "STOP"
@@ -1696,10 +1923,6 @@ async function handleControlCommand(
     );
   }
 
-  // ----------------------------------------------------------
-  // RESUME
-  // ----------------------------------------------------------
-
   if (
     command === "RESUME"
   ) {
@@ -1743,10 +1966,6 @@ async function handleControlCommand(
     );
   }
 
-  // ----------------------------------------------------------
-  // STATUS
-  // ----------------------------------------------------------
-
   if (
     command === "STATUS"
   ) {
@@ -1780,7 +1999,6 @@ async function handleControlCommand(
           ),
       }
     );
-
     return (
       "🧠 SILENT STRATEGIST STATUS\n\n" +
 
@@ -1830,6 +2048,17 @@ async function handleControlCommand(
         ROBOT_STATE.orientation
       }°\n` +
 
+      `Controller Security: ${
+        ROBOT_CONTROLLER.enabled
+          ? "ACTIVE"
+          : "NOT CONFIGURED"
+      }\n` +
+
+      `Controller Heartbeat: ${
+        getRobotControllerHealth()
+          .heartbeat
+      }\n` +
+
       `Pending Authorization: ${
         pending
           ? "YES"
@@ -1843,7 +2072,8 @@ async function handleControlCommand(
   }
 
   return null;
-            }
+}
+
 // ============================================================
 // AI CAPABILITY REGISTRY
 // ============================================================
@@ -2069,8 +2299,8 @@ async function dispatchToProvider(
   throw new Error(
     `Unsupported provider: ${route.provider}`
   );
-  }
-    // ============================================================
+}
+// ============================================================
 // AI RESPONSE VERIFICATION
 // ============================================================
 
@@ -2143,10 +2373,6 @@ async function processMessage(
     }
   );
 
-  // ----------------------------------------------------------
-  // ROBOT HELP
-  // ----------------------------------------------------------
-
   if (
     String(text)
       .trim()
@@ -2155,10 +2381,6 @@ async function processMessage(
   ) {
     return robotHelp();
   }
-
-  // ----------------------------------------------------------
-  // POLICY
-  // ----------------------------------------------------------
 
   const policyResult =
     evaluatePolicy(
@@ -2197,10 +2419,6 @@ async function processMessage(
     );
   }
 
-  // ----------------------------------------------------------
-  // ROBOT STATUS DOES NOT NEED MOVEMENT AUTHORIZATION
-  // ----------------------------------------------------------
-
   if (
     task === "robotics" &&
     command?.type === "STATUS"
@@ -2215,10 +2433,6 @@ async function processMessage(
 
     return getRobotStatusText();
   }
-
-  // ----------------------------------------------------------
-  // ROBOT SENSITIVE ACTION
-  // ----------------------------------------------------------
 
   if (
     task === "robotics" &&
@@ -2321,10 +2535,7 @@ async function processMessage(
 
       "This authorization expires in 5 minutes."
     );
-    }
-  // ----------------------------------------------------------
-  // NORMAL AI REASONING
-  // ----------------------------------------------------------
+  }
 
   const route =
     routeAI(task);
@@ -2494,6 +2705,77 @@ async function sendWhatsAppMessage(
 }
 
 // ============================================================
+// HTTP BODY READER
+// ============================================================
+
+function readRequestBody(req) {
+  return new Promise(
+    (resolve, reject) => {
+      let body = "";
+
+      req.on(
+        "data",
+        (chunk) => {
+          body +=
+            chunk.toString();
+
+          if (
+            body.length >
+            100000
+          ) {
+            reject(
+              new Error(
+                "Request body is too large."
+              )
+            );
+
+            req.destroy();
+          }
+        }
+      );
+
+      req.on(
+        "end",
+        () => resolve(body)
+      );
+
+      req.on(
+        "error",
+        reject
+      );
+    }
+  );
+}
+
+// ============================================================
+// JSON RESPONSE HELPER
+// ============================================================
+
+function sendJSON(
+  res,
+  statusCode,
+  payload
+) {
+  res.writeHead(
+    statusCode,
+    {
+      "Content-Type":
+        "application/json",
+
+      "Cache-Control":
+        "no-store",
+    }
+  );
+
+  res.end(
+    JSON.stringify(
+      payload,
+      null,
+      2
+    )
+  );
+    }
+// ============================================================
 // HTTP SERVER
 // ============================================================
 
@@ -2520,7 +2802,7 @@ const server =
         res.end(
           "THE SILENT STRATEGIST AI\n\n" +
 
-          `Server: ONLINE\n` +
+          "Server: ONLINE\n" +
 
           `Policy Engine: ACTIVE\n` +
 
@@ -2552,6 +2834,12 @@ const server =
               .toUpperCase()
           }\n` +
 
+          `Secure Controller: ${
+            ROBOT_CONTROLLER.enabled
+              ? "ACTIVE"
+              : "NOT CONFIGURED"
+          }\n` +
+
           `Robot Status: ${
             ROBOT_STATE.status
           }\n` +
@@ -2568,8 +2856,9 @@ const server =
         );
 
         return;
-  }
-// ======================================================
+      }
+
+      // ======================================================
       // CAPABILITIES
       // ======================================================
 
@@ -2578,519 +2867,25 @@ const server =
         req.url ===
           "/capabilities"
       ) {
-        res.writeHead(
+        sendJSON(
+          res,
           200,
           {
-            "Content-Type":
-              "application/json",
-          }
-        );
+            policy:
+              POLICY,
 
-        res.end(
-          JSON.stringify(
-            {
-              policy:
-                POLICY,
+            capabilities:
+              AI_CAPABILITIES,
 
-              capabilities:
-                AI_CAPABILITIES,
+            robotics: {
+              mode:
+                "simulation",
 
-              robotics: {
-                mode:
-                  "simulation",
-
-                safety:
-                  ROBOT_SAFETY,
-
-                robot:
-                  ROBOT_STATE,
-              },
-            },
-            null,
-            2
-          )
-        );
-
-        return;
-      }
-
-      // ======================================================
-      // ROBOT STATUS API
-      // ======================================================
-
-      if (
-        req.method === "GET" &&
-        req.url === "/robot"
-      ) {
-        res.writeHead(
-          200,
-          {
-            "Content-Type":
-              "application/json",
-          }
-        );
-
-        res.end(
-          JSON.stringify(
-            {
-              robot:
-                ROBOT_STATE,
-
-              chargingStation:
-                CHARGING_STATION,
+              controller:
+                getRobotControllerHealth(),
 
               safety:
                 ROBOT_SAFETY,
 
-              mode:
-                "simulation",
-
-              hardwareConnected:
-                false,
-            },
-            null,
-            2
-          )
-        );
-
-        return;
-      }
-
-      // ======================================================
-      // WEBHOOK VERIFICATION
-      // ======================================================
-
-      if (
-        req.method === "GET" &&
-        req.url.startsWith(
-          "/webhook"
-        )
-      ) {
-        const url =
-          new URL(
-            req.url,
-            `http://${req.headers.host}`
-          );
-
-        const mode =
-          url.searchParams.get(
-            "hub.mode"
-          );
-
-        const token =
-          url.searchParams.get(
-            "hub.verify_token"
-          );
-
-        const challenge =
-          url.searchParams.get(
-            "hub.challenge"
-          );
-
-        if (
-          mode === "subscribe" &&
-          token ===
-            WEBHOOK_VERIFY_TOKEN
-        ) {
-          console.log(
-            "Webhook verified successfully."
-          );
-
-          res.writeHead(
-            200,
-            {
-              "Content-Type":
-                "text/plain",
-            }
-          );
-
-          res.end(
-            challenge
-          );
-
-          return;
-        }
-
-        res.writeHead(403);
-
-        res.end(
-          "Forbidden"
-        );
-
-        return;
-      }
-
-      // ======================================================
-      // WHATSAPP WEBHOOK
-      // ======================================================
-
-      if (
-        req.method === "POST" &&
-        req.url === "/webhook"
-      ) {
-        let body = "";
-
-        req.on(
-          "data",
-          (chunk) => {
-            body +=
-              chunk.toString();
-          }
-        );
-
-        req.on(
-          "end",
-          async () => {
-            try {
-              const payload =
-                JSON.parse(
-                  body
-                );
-
-              console.log(
-                "[WEBHOOK] Incoming payload received."
-              );
-
-              if (
-                payload.object !==
-                "whatsapp_business_account"
-              ) {
-                res.writeHead(
-                  200
-                );
-
-                res.end(
-                  "EVENT_RECEIVED"
-                );
-
-                return;
-              }
-
-              const entries =
-                payload.entry ||
-                [];
-
-              for (
-                const entry of
-                  entries
-              ) {
-                const changes =
-                  entry.changes ||
-                  [];
-
-                for (
-                  const change of
-                    changes
-                ) {
-                  const value =
-                    change.value ||
-                    {};
-
-                  const messages =
-                    value.messages ||
-                    [];
-
-                  for (
-                    const message of
-                      messages
-                  ) {
-                    const sender =
-                      message.from;
-
-                    if (
-                      message.type !==
-                        "text" ||
-                      !message.text
-                    ) {
-                      console.log(
-                        "[WEBHOOK] Non-text message ignored."
-                      );
-
-                      continue;
-                    }
-
-                    const text =
-                      message.text.body.trim();
-
-                    console.log(
-                      `[WHATSAPP] Message from ${sender}: ${text}`
-                    );
-                    // ----------------------------------------
-                    // CONTROL COMMANDS
-                    // ----------------------------------------
-
-                    if (
-                      isControlCommand(
-                        text
-                      )
-                    ) {
-                      try {
-                        const controlResponse =
-                          await handleControlCommand(
-                            sender,
-                            text
-                          );
-
-                        if (
-                          controlResponse
-                        ) {
-                          await sendWhatsAppMessage(
-                            sender,
-                            controlResponse
-                          );
-                        }
-
-                        continue;
-                      } catch (
-                        error
-                      ) {
-                        console.error(
-                          "[CONTROL ERROR]",
-                          error
-                        );
-
-                        await sendWhatsAppMessage(
-                          sender,
-
-                          "⚠️ Control command failed: " +
-                            error.message
-                        );
-
-                        continue;
-                      }
-                    }
-
-                    // ----------------------------------------
-                    // NORMAL MESSAGE
-                    // ----------------------------------------
-
-                    try {
-                      const response =
-                        await processMessage(
-                          sender,
-                          text
-                        );
-
-                      await sendWhatsAppMessage(
-                        sender,
-                        response
-                      );
-                    } catch (
-                      error
-                    ) {
-                      console.error(
-                        "[MESSAGE PROCESSING ERROR]",
-                        error
-                      );
-
-                      recordAuditEvent(
-                        "MESSAGE_PROCESSING_ERROR",
-                        {
-                          sender:
-                            normalizeWhatsAppNumber(
-                              sender
-                            ),
-
-                          text,
-
-                          error:
-                            error.message,
-                        }
-                      );
-
-                      try {
-                        await sendWhatsAppMessage(
-                          sender,
-
-                          "⚠️ The Silent Strategist AI encountered an error while processing your request.\n\nCheck the Render logs for details."
-                        );
-                      } catch (
-                        sendError
-                      ) {
-                        console.error(
-                          "[ERROR SENDING FAILURE MESSAGE]",
-                          sendError
-                        );
-                      }
-                    }
-                  }
-                }
-              }
-
-              if (
-                !res.headersSent
-              ) {
-                res.writeHead(
-                  200,
-                  {
-                    "Content-Type":
-                      "text/plain",
-                  }
-                );
-
-                res.end(
-                  "EVENT_RECEIVED"
-                );
-              }
-            } catch (
-              error
-            ) {
-              console.error(
-                "[WEBHOOK ERROR]",
-                error
-              );
-
-              recordAuditEvent(
-                "WEBHOOK_ERROR",
-                {
-                  error:
-                    error.message,
-                }
-              );
-
-              if (
-                !res.headersSent
-              ) {
-                res.writeHead(
-                  400,
-                  {
-                    "Content-Type":
-                      "text/plain",
-                  }
-                );
-
-                res.end(
-                  "Invalid webhook payload"
-                );
-              }
-            }
-          }
-        );
-
-        return;
-      }
-
-      // ======================================================
-      // 404
-      // ======================================================
-
-      res.writeHead(
-        404,
-        {
-          "Content-Type":
-            "text/plain",
-        }
-      );
-
-      res.end(
-        "Not Found"
-      );
-    }
-  );
-
-// ============================================================
-// SERVER ERROR HANDLER
-// ============================================================
-
-server.on(
-  "error",
-  (error) => {
-    console.error(
-      "[SERVER ERROR]",
-      error
-    );
-  }
-);
-
-// ============================================================
-// START SERVER
-// ============================================================
-
-async function startServer() {
-  try {
-    await initializeDatabase();
-
-    server.listen(
-      PORT,
-      () => {
-        console.log(
-          "========================================"
-        );
-
-        console.log(
-          "THE SILENT STRATEGIST AI"
-        );
-
-        console.log(
-          "========================================"
-        );
-
-        console.log(
-          `Server running on port ${PORT}`
-        );
-
-        console.log(
-          `Policy Engine: ACTIVE`
-        );
-
-        console.log(
-          `Human Authority: ${
-            POLICY.humanAuthority
-          }`
-        );
-
-        console.log(
-          `Human Authorization: ACTIVE`
-        );
-
-        console.log(
-          `Audit Logging: ACTIVE`
-        );
-
-        console.log(
-          `Persistent Storage: POSTGRESQL`
-        );
-
-        console.log(
-          `Emergency Stop: ${
-            SYSTEM_STATE.emergencyStop
-              ? "ON"
-              : "OFF"
-          }`
-        );
-
-        console.log(
-          `Robot Controller: ACTIVE`
-        );
-
-        console.log(
-          `Robot Mode: ${
-            POLICY.capabilities
-              .robotics.mode
-          }`
-        );
-
-        console.log(
-          `Robot ID: ${
-            ROBOT_STATE.id
-          }`
-        );
-
-        console.log(
-          "========================================"
-        );
-      }
-    );
-  } catch (
-    error
-  ) {
-    console.error(
-      "[STARTUP ERROR] PostgreSQL initialization failed:",
-      error
-    );
-
-    process.exit(1);
-  }
-}
-
-startServer();
+              robot:
+                ROBOT
