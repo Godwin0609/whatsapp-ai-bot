@@ -1,30 +1,48 @@
+"use strict";
+
+/*
+========================================================
+THE SILENT STRATEGIST AI
+WhatsApp AI + PostgreSQL Audit + Robotics Controller
+========================================================
+
+Architecture:
+- WhatsApp Cloud API
+- OpenAI
+- PostgreSQL persistent audit logging
+- Human authorization for robot actions
+- Emergency stop
+- Secure robot controller authentication
+- One-time, short-lived controller grants
+- Simulation mode
+- Health / capability endpoints
+
+Current robot mode:
+SIMULATION
+
+IMPORTANT:
+Physical robot operation must additionally use a physical
+emergency-stop mechanism and local hardware safety controls.
+========================================================
+*/
+
 const http = require("http");
 const crypto = require("crypto");
 const OpenAI = require("openai");
 const { Pool } = require("pg");
 
-// ============================================================
-// THE SILENT STRATEGIST AI
-// ROBOTICS LAYER v2 — SECURE CONTROLLER + SIMULATION MODE
-// ============================================================
+/* ======================================================
+   ENVIRONMENT
+====================================================== */
 
-// ============================================================
-// ENVIRONMENT VARIABLES
-// ============================================================
+const PORT = Number(process.env.PORT || 10000);
 
-const PORT = process.env.PORT || 3000;
-
-const WEBHOOK_VERIFY_TOKEN =
-  process.env.WEBHOOK_VERIFY_TOKEN;
-
-const WHATSAPP_ACCESS_TOKEN =
-  process.env.WHATSAPP_ACCESS_TOKEN;
-
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID =
   process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-const OPENAI_API_KEY =
-  process.env.OPENAI_API_KEY;
+const WEBHOOK_VERIFY_TOKEN =
+  process.env.WEBHOOK_VERIFY_TOKEN;
 
 const ADMIN_PHONE_NUMBER =
   process.env.ADMIN_PHONE_NUMBER;
@@ -32,14 +50,65 @@ const ADMIN_PHONE_NUMBER =
 const DATABASE_URL =
   process.env.DATABASE_URL;
 
-// New secure robot-controller secret.
-// Keep this ONLY in Render Environment Variables.
 const ROBOT_CONTROLLER_TOKEN =
   process.env.ROBOT_CONTROLLER_TOKEN;
 
-// ============================================================
-// ROBOT CONTROLLER CONFIGURATION
-// ============================================================
+/* ======================================================
+   VERSION / POLICY
+====================================================== */
+
+const APP_VERSION = "4.0.0";
+const POLICY_VERSION = "4.0.0";
+
+const POLICY = {
+  name: "Silent Strategist Safety Policy",
+  version: POLICY_VERSION,
+
+  humanAuthorityRequired: true,
+
+  robotics: {
+    enabled: true,
+    simulationDefault: true,
+    physicalExecutionRequiresAuthorization: true,
+    emergencyStopAvailable: true,
+    controllerAuthenticationRequired: true,
+    shortLivedControllerGrants: true
+  }
+};
+
+/* ======================================================
+   OPENAI
+====================================================== */
+
+const openai = OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey: OPENAI_API_KEY
+    })
+  : null;
+
+/* ======================================================
+   POSTGRESQL
+====================================================== */
+
+let pool = null;
+
+if (DATABASE_URL) {
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+
+    ssl: {
+      rejectUnauthorized: false
+    },
+
+    max: 5,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000
+  });
+}
+
+/* ======================================================
+   ROBOT CONTROLLER
+====================================================== */
 
 const ROBOT_CONTROLLER = {
   enabled: Boolean(ROBOT_CONTROLLER_TOKEN),
@@ -56,434 +125,329 @@ const ROBOT_CONTROLLER = {
 
   connected: false,
 
-  hardwareConnected: false,
+  hardwareConnected: false
 };
 
-// ============================================================
-// POSTGRESQL
-// ============================================================
+/* ======================================================
+   ROBOT STATE
+====================================================== */
 
-if (!DATABASE_URL) {
-  console.error(
-    "[DATABASE] DATABASE_URL is not configured."
-  );
-
-  process.exit(1);
-}
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-
-  ssl: {
-    rejectUnauthorized: false,
-  },
-
-  max: 5,
-
-  idleTimeoutMillis: 30000,
-
-  connectionTimeoutMillis: 10000,
-});
-
-pool.on("error", (error) => {
-  console.error(
-    "[DATABASE] Unexpected PostgreSQL pool error:",
-    error
-  );
-});
-
-// ============================================================
-// OPENAI
-// ============================================================
-
-const openai = OPENAI_API_KEY
-  ? new OpenAI({
-      apiKey: OPENAI_API_KEY,
-    })
-  : null;
-
-// ============================================================
-// POLICY ENGINE
-// ============================================================
-
-const POLICY = {
-  version: "4.0.0",
-
-  humanAuthority: true,
-
-  requireAuthorizationForSensitiveActions: true,
-
-  auditActions: true,
-
-  allowAutonomousPrivilegeExpansion: false,
-
-  capabilities: {
-    reasoning: {
-      enabled: true,
-      provider: "openai",
-      model: "gpt-4o-mini",
-    },
-
-    image: {
-      enabled: false,
-    },
-
-    speech: {
-      enabled: false,
-    },
-
-    coding: {
-      enabled: false,
-    },
-
-    research: {
-      enabled: false,
-    },
-
-    robotics: {
-      enabled: true,
-      mode: "simulation",
-      version: "2.0.0",
-    },
-  },
-};
-
-// ============================================================
-// SYSTEM STATE
-// ============================================================
-
-const SYSTEM_STATE = {
-  emergencyStop: false,
-
-  version: "4.0.0",
-};
-
-// ============================================================
-// ROBOT SAFETY LIMITS
-// ============================================================
-
-const ROBOT_SAFETY = {
-  maximumMoveDistance: 10,
-
-  maximumTurnDegrees: 180,
-
-  minimumBatteryForMovement: 10,
-
-  simulationStepDelayMs: 150,
-
-  batteryUsagePerStep: 1,
-
-  controllerHeartbeatTimeoutMs: 30000,
-};
-
-// ============================================================
-// ROBOT STATE
-// ============================================================
-
-const ROBOT_STATE = {
+const ROBOT = {
   id: "silent-strategist-robot-01",
+
+  mode: "simulation",
 
   status: "IDLE",
 
-  battery: 100,
-
   position: {
     x: 0,
-    y: 0,
+    y: 0
   },
 
-  orientation: 0,
+  heading: 0,
 
-  destination: null,
+  battery: 100,
 
-  currentCommand: null,
+  charging: false,
 
-  lastTask: null,
+  emergencyStop: false,
 
-  lastUpdated: new Date().toISOString(),
+  lastCommand: null,
+
+  lastCommandAt: null,
+
+  lastAuthorizationId: null,
+
+  controller: {
+    authenticated: ROBOT_CONTROLLER.enabled,
+    connected: false
+  }
 };
 
-// ============================================================
-// CHARGING STATION
-// ============================================================
+/* ======================================================
+   ROBOT SAFETY
+====================================================== */
 
-const CHARGING_STATION = {
-  x: 5,
-  y: 5,
+const ROBOT_SAFETY = {
+  emergencyStop: false,
+
+  maxMoveDistance: 20,
+
+  maxTurnDegrees: 360,
+
+  minimumBatteryPercent: 10,
+
+  authorizationRequired: true,
+
+  controllerAuthenticationRequired: true,
+
+  grantLifetimeMs: 60000
 };
 
-// ============================================================
-// DATABASE INITIALIZATION
-// ============================================================
+/* ======================================================
+   CAPABILITIES
+====================================================== */
+
+const AI_CAPABILITIES = [
+  "conversation",
+  "reasoning",
+  "task classification",
+  "policy evaluation",
+  "WhatsApp messaging",
+  "persistent PostgreSQL audit logging",
+  "human authorization",
+  "emergency stop",
+  "robot status",
+  "robot movement simulation",
+  "robot charging simulation",
+  "secure robot controller",
+  "controller heartbeat",
+  "short-lived authorization grants"
+];
+
+/* ======================================================
+   AUTHORIZATION STORAGE
+====================================================== */
+
+const pendingAuthorizations = new Map();
+
+const controllerGrants = new Map();
+
+const AUTHORIZATION_TIMEOUT_MS =
+  5 * 60 * 1000;
+
+const CONTROLLER_GRANT_TIMEOUT_MS =
+  ROBOT_SAFETY.grantLifetimeMs;
+
+/* ======================================================
+   DATABASE
+====================================================== */
 
 async function initializeDatabase() {
-  console.log(
-    "[DATABASE] Connecting to PostgreSQL..."
-  );
+  if (!pool) {
+    console.log(
+      "[DATABASE] DATABASE_URL not configured. PostgreSQL disabled."
+    );
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS audit_events (
-      id TEXT PRIMARY KEY,
-      timestamp TIMESTAMPTZ NOT NULL,
-      type TEXT NOT NULL,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb
-    )
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp
-    ON audit_events (timestamp DESC)
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_audit_events_type
-    ON audit_events (type)
-  `);
-
-  console.log(
-    "[DATABASE] PostgreSQL connected."
-  );
-}
-
-// ============================================================
-// AUDIT LOG
-// ============================================================
-
-const auditLog = [];
-
-const MAX_AUDIT_LOG_SIZE = 1000;
-
-function recordAuditEvent(type, data = {}) {
-  const event = {
-    id:
-      `AUDIT-${Date.now()}-` +
-      `${Math.floor(Math.random() * 10000)}`,
-
-    timestamp:
-      new Date().toISOString(),
-
-    type,
-
-    ...data,
-  };
-
-  auditLog.push(event);
-
-  if (
-    auditLog.length >
-    MAX_AUDIT_LOG_SIZE
-  ) {
-    auditLog.shift();
+    return;
   }
 
-  console.log(
-    "[AUDIT]",
-    JSON.stringify(event)
-  );
+  console.log("[DATABASE] Connecting to PostgreSQL...");
 
-  pool
-    .query(
-      `
-      INSERT INTO audit_events (
-        id,
-        timestamp,
-        type,
-        data
-      )
-      VALUES ($1, $2, $3, $4::jsonb)
-      ON CONFLICT (id) DO NOTHING
-      `,
-      [
-        event.id,
-        event.timestamp,
-        event.type,
-        JSON.stringify(data),
-      ]
-    )
-    .catch((error) => {
-      console.error(
-        "[DATABASE] Failed to persist audit:",
-        error.message
+  const client = await pool.connect();
+
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS audit_events (
+        id BIGSERIAL PRIMARY KEY,
+        audit_id TEXT UNIQUE NOT NULL,
+        timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        event_type TEXT NOT NULL,
+        sender TEXT,
+        command TEXT,
+        authorization_id TEXT,
+        details JSONB
       );
-    });
+    `);
 
-  return event;
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp
+      ON audit_events(timestamp);
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_audit_events_type
+      ON audit_events(event_type);
+    `);
+
+    console.log("[DATABASE] PostgreSQL connected.");
+  } finally {
+    client.release();
+  }
 }
 
-// ============================================================
-// WHATSAPP NUMBER NORMALIZATION
-// ============================================================
+/* ======================================================
+   AUDIT LOGGING
+====================================================== */
 
-function normalizeWhatsAppNumber(number) {
-  if (!number) {
+async function recordAuditEvent(
+  eventType,
+  details = {}
+) {
+  const auditId =
+    `AUDIT-${Date.now()}-${crypto
+      .randomInt(1000, 9999)}`;
+
+  const event = {
+    id: auditId,
+    timestamp: new Date().toISOString(),
+    eventType,
+    ...details
+  };
+
+  console.log(
+    `[AUDIT] ${JSON.stringify(event)}`
+  );
+
+  if (pool) {
+    try {
+      await pool.query(
+        `
+        INSERT INTO audit_events
+        (
+          audit_id,
+          timestamp,
+          event_type,
+          sender,
+          command,
+          authorization_id,
+          details
+        )
+        VALUES
+        (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7
+        )
+        `,
+        [
+          auditId,
+          event.timestamp,
+          eventType,
+          details.sender || null,
+          details.command || null,
+          details.authorizationId || null,
+          JSON.stringify(details)
+        ]
+      );
+    } catch (error) {
+      console.error(
+        "[DATABASE] Failed to save audit event:",
+        error.message
+      );
+    }
+  }
+
+  return auditId;
+}
+
+/* ======================================================
+   BASIC HELPERS
+====================================================== */
+
+function normalizePhoneNumber(value) {
+  if (!value) {
     return "";
   }
 
-  let normalized =
-    String(number).replace(/\D/g, "");
-
-  if (normalized.startsWith("0")) {
-    normalized =
-      "234" +
-      normalized.substring(1);
-  }
-
-  return normalized;
+  return String(value)
+    .replace(/\D/g, "");
 }
 
-// ============================================================
-// ADMIN CHECK
-// ============================================================
-
 function isAdmin(sender) {
-  const normalizedSender =
-    normalizeWhatsAppNumber(sender);
-
-  const normalizedAdmin =
-    normalizeWhatsAppNumber(
-      ADMIN_PHONE_NUMBER
-    );
-
   return (
-    normalizedSender &&
-    normalizedAdmin &&
-    normalizedSender ===
-      normalizedAdmin
+    normalizePhoneNumber(sender) ===
+    normalizePhoneNumber(ADMIN_PHONE_NUMBER)
   );
 }
 
-// ============================================================
-// SECURE ROBOT CONTROLLER AUTHENTICATION
-// ============================================================
-
 function safeTokenCompare(
-  suppliedToken,
-  expectedToken
+  provided,
+  expected
 ) {
-  if (
-    !suppliedToken ||
-    !expectedToken
-  ) {
+  if (!provided || !expected) {
     return false;
   }
 
-  const supplied =
-    Buffer.from(
-      String(suppliedToken),
-      "utf8"
-    );
+  const providedBuffer =
+    Buffer.from(String(provided));
 
-  const expected =
-    Buffer.from(
-      String(expectedToken),
-      "utf8"
-    );
+  const expectedBuffer =
+    Buffer.from(String(expected));
 
   if (
-    supplied.length !==
-    expected.length
+    providedBuffer.length !==
+    expectedBuffer.length
   ) {
     return false;
   }
 
   return crypto.timingSafeEqual(
-    supplied,
-    expected
+    providedBuffer,
+    expectedBuffer
   );
 }
 
-function authenticateRobotController(
-  req
-) {
+function authenticateRobotController(req) {
   if (!ROBOT_CONTROLLER_TOKEN) {
-    return {
-      authenticated: false,
-
-      reason:
-        "Robot controller token is not configured.",
-    };
+    return false;
   }
 
-  const authorization =
+  const header =
     req.headers.authorization || "";
 
-  if (
-    !authorization.startsWith(
-      "Bearer "
-    )
-  ) {
-    return {
-      authenticated: false,
-
-      reason:
-        "Missing Bearer authentication.",
-    };
+  if (!header.startsWith("Bearer ")) {
+    return false;
   }
 
-  const suppliedToken =
-    authorization.substring(7).trim();
+  const token =
+    header.slice("Bearer ".length).trim();
 
-  if (
-    !safeTokenCompare(
-      suppliedToken,
-      ROBOT_CONTROLLER_TOKEN
-    )
-  ) {
-    return {
-      authenticated: false,
-
-      reason:
-        "Invalid robot controller credentials.",
-    };
-  }
-
-  return {
-    authenticated: true,
-  };
+  return safeTokenCompare(
+    token,
+    ROBOT_CONTROLLER_TOKEN
+  );
 }
 
-// ============================================================
-// ROBOT CONTROLLER HEARTBEAT
-// ============================================================
+function getPath(req) {
+  try {
+    return new URL(
+      req.url,
+      `http://${req.headers.host || "localhost"}`
+    ).pathname;
+  } catch {
+    return req.url.split("?")[0];
+  }
+}
+
+/* ======================================================
+   ROBOT CONTROLLER HEARTBEAT
+====================================================== */
 
 function registerRobotHeartbeat() {
+  const now = Date.now();
+
   ROBOT_CONTROLLER.lastHeartbeat =
-    new Date().toISOString();
+    now;
 
-  ROBOT_CONTROLLER.connected =
-    true;
+  ROBOT_CONTROLLER.connected = true;
 
-  recordAuditEvent(
-    "ROBOT_CONTROLLER_HEARTBEAT",
-    {
-      robotId:
-        ROBOT_STATE.id,
+  ROBOT.controller.connected = true;
 
-      mode:
-        ROBOT_CONTROLLER.mode,
-
-      hardwareConnected:
-        ROBOT_CONTROLLER.hardwareConnected,
-    }
-  );
+  return getRobotControllerHealth();
 }
 
 function getRobotControllerHealth() {
-  let heartbeatHealthy = false;
+  const now = Date.now();
+
+  const heartbeatFresh =
+    ROBOT_CONTROLLER.lastHeartbeat !==
+      null &&
+    now -
+      ROBOT_CONTROLLER.lastHeartbeat <=
+      ROBOT_CONTROLLER.heartbeatTimeoutMs;
 
   if (
-    ROBOT_CONTROLLER.lastHeartbeat
+    ROBOT_CONTROLLER.lastHeartbeat !== null &&
+    !heartbeatFresh
   ) {
-    const age =
-      Date.now() -
-      new Date(
-        ROBOT_CONTROLLER.lastHeartbeat
-      ).getTime();
+    ROBOT_CONTROLLER.connected = false;
 
-    heartbeatHealthy =
-      age <=
-      ROBOT_SAFETY
-        .controllerHeartbeatTimeoutMs;
+    ROBOT.controller.connected = false;
   }
 
   return {
@@ -499,188 +463,195 @@ function getRobotControllerHealth() {
     version:
       ROBOT_CONTROLLER.version,
 
-    authenticated:
-      ROBOT_CONTROLLER.enabled,
-
-    heartbeat:
-      heartbeatHealthy
-        ? "HEALTHY"
-        : "WAITING",
-
-    lastHeartbeat:
-      ROBOT_CONTROLLER.lastHeartbeat,
+    connected:
+      ROBOT_CONTROLLER.connected,
 
     hardwareConnected:
       ROBOT_CONTROLLER.hardwareConnected,
 
-    emergencyStop:
-      SYSTEM_STATE.emergencyStop,
+    heartbeatFresh,
+
+    lastHeartbeat:
+      ROBOT_CONTROLLER.lastHeartbeat
+        ? new Date(
+            ROBOT_CONTROLLER.lastHeartbeat
+          ).toISOString()
+        : null
   };
 }
 
-// ============================================================
-// AUTHORIZATION SYSTEM
-// ============================================================
-
-const pendingAuthorizations =
-  new Map();
-
-const AUTHORIZATION_TIMEOUT_MS =
-  5 * 60 * 1000;
+/* ======================================================
+   AUTHORIZATION
+====================================================== */
 
 function clearAuthorization(
-  sender,
-  reason = "cleared"
+  authorizationId
 ) {
-  const normalizedSender =
-    normalizeWhatsAppNumber(sender);
-
   const existing =
     pendingAuthorizations.get(
-      normalizedSender
+      authorizationId
     );
 
-  if (!existing) {
-    return null;
+  if (existing?.timeout) {
+    clearTimeout(existing.timeout);
   }
 
   pendingAuthorizations.delete(
-    normalizedSender
+    authorizationId
   );
-
-  recordAuditEvent(
-    "AUTHORIZATION_CLEARED",
-    {
-      sender: normalizedSender,
-
-      task: existing.task,
-
-      reason,
-    }
-  );
-
-  return existing;
 }
 
 function createAuthorizationRequest(
   sender,
-  task,
-  originalText,
-  command = null
+  command
 ) {
-  const normalizedSender =
-    normalizeWhatsAppNumber(sender);
-
-  if (
-    pendingAuthorizations.has(
-      normalizedSender
-    )
-  ) {
-    clearAuthorization(
-      sender,
-      "replaced_by_new_request"
-    );
-  }
-
-  const createdAt = Date.now();
+  const authorizationId =
+    `AUTH-${Date.now()}-${crypto
+      .randomInt(1000, 9999)}`;
 
   const expiresAt =
-    createdAt +
+    Date.now() +
     AUTHORIZATION_TIMEOUT_MS;
 
-  const request = {
-    sender: normalizedSender,
+  const timeout =
+    setTimeout(() => {
+      const existing =
+        pendingAuthorizations.get(
+          authorizationId
+        );
 
-    task,
+      if (existing) {
+        pendingAuthorizations.delete(
+          authorizationId
+        );
 
-    originalText,
-
-    command,
-
-    createdAt,
-
-    expiresAt,
-  };
+        recordAuditEvent(
+          "AUTHORIZATION_EXPIRED",
+          {
+            sender: existing.sender,
+            command: existing.command,
+            authorizationId
+          }
+        ).catch(console.error);
+      }
+    }, AUTHORIZATION_TIMEOUT_MS);
 
   pendingAuthorizations.set(
-    normalizedSender,
-    request
+    authorizationId,
+    {
+      authorizationId,
+      sender,
+      command,
+      createdAt: Date.now(),
+      expiresAt,
+      timeout
+    }
   );
 
-  const audit =
-    recordAuditEvent(
-      "AUTHORIZATION_PROPOSED",
-      {
-        sender: normalizedSender,
-
-        task,
-
-        originalText,
-
-        command,
-
-        expiresAt:
-          new Date(
-            expiresAt
-          ).toISOString(),
-      }
-    );
-
-  return {
-    ...request,
-
-    auditId: audit.id,
-  };
+  return authorizationId;
 }
 
 function getPendingAuthorization(
-  sender
+  authorizationId
 ) {
-  const normalizedSender =
-    normalizeWhatsAppNumber(sender);
-
-  const request =
+  const pending =
     pendingAuthorizations.get(
-      normalizedSender
+      authorizationId
     );
 
-  if (!request) {
+  if (!pending) {
     return null;
   }
 
-  if (
-    Date.now() >
-    request.expiresAt
-  ) {
-    pendingAuthorizations.delete(
-      normalizedSender
-    );
-
-    recordAuditEvent(
-      "AUTHORIZATION_EXPIRED",
-      {
-        sender: normalizedSender,
-
-        task: request.task,
-      }
+  if (Date.now() > pending.expiresAt) {
+    clearAuthorization(
+      authorizationId
     );
 
     return null;
   }
 
-  return request;
+  return pending;
 }
 
-// ============================================================
-// ROBOT COMMAND PARSER
-// ============================================================
+/* ======================================================
+   CONTROLLER GRANTS
+====================================================== */
+
+function createControllerGrant(
+  authorization
+) {
+  const grantId =
+    crypto.randomBytes(32).toString("hex");
+
+  const issuedAt =
+    Date.now();
+
+  const expiresAt =
+    issuedAt +
+    CONTROLLER_GRANT_TIMEOUT_MS;
+
+  controllerGrants.set(
+    grantId,
+    {
+      grantId,
+
+      authorizationId:
+        authorization.authorizationId,
+
+      sender:
+        authorization.sender,
+
+      command:
+        authorization.command,
+
+      issuedAt,
+
+      expiresAt,
+
+      consumed: false
+    }
+  );
+
+  setTimeout(() => {
+    const grant =
+      controllerGrants.get(grantId);
+
+    if (
+      grant &&
+      !grant.consumed &&
+      Date.now() > grant.expiresAt
+    ) {
+      controllerGrants.delete(
+        grantId
+      );
+
+      recordAuditEvent(
+        "ROBOT_CONTROLLER_GRANT_EXPIRED",
+        {
+          sender: grant.sender,
+          command: grant.command,
+          authorizationId:
+            grant.authorizationId,
+          grantId
+        }
+      ).catch(console.error);
+    }
+  }, CONTROLLER_GRANT_TIMEOUT_MS + 1000);
+
+  return grantId;
+}
+
+/* ======================================================
+   ROBOT COMMAND PARSER
+====================================================== */
 
 function parseRobotCommand(text) {
-  const original =
-    String(text || "").trim();
-
   const normalized =
-    original.toUpperCase();
+    String(text || "")
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, " ");
 
   if (
     normalized === "ROBOT STATUS" ||
@@ -688,6 +659,7 @@ function parseRobotCommand(text) {
   ) {
     return {
       type: "STATUS",
+      raw: normalized
     };
   }
 
@@ -696,12 +668,12 @@ function parseRobotCommand(text) {
   ) {
     return {
       type: "STOP",
+      raw: normalized
     };
   }
 
   if (
-    normalized ===
-      "ROBOT GO CHARGING" ||
+    normalized === "ROBOT GO CHARGING" ||
     normalized ===
       "ROBOT GO TO CHARGING STATION" ||
     normalized ===
@@ -711,51 +683,72 @@ function parseRobotCommand(text) {
   ) {
     return {
       type: "GO_CHARGING",
+      raw: normalized
     };
   }
 
-  const moveMatch =
+  let match =
     normalized.match(
-      /^ROBOT\s+MOVE\s+(FORWARD|BACKWARD)\s+(\d+(?:\.\d+)?)$/
+      /^ROBOT MOVE FORWARD ([0-9]+(?:\.[0-9]+)?)$/
     );
 
-  if (moveMatch) {
+  if (match) {
     return {
-      type: "MOVE",
-
-      direction:
-        moveMatch[1].toLowerCase(),
-
-      distance:
-        Number(moveMatch[2]),
+      type: "MOVE_FORWARD",
+      distance: Number(match[1]),
+      raw: normalized
     };
   }
 
-  const turnMatch =
+  match =
     normalized.match(
-      /^ROBOT\s+TURN\s+(LEFT|RIGHT)(?:\s+(\d+(?:\.\d+)?))?$/
+      /^ROBOT MOVE BACKWARD ([0-9]+(?:\.[0-9]+)?)$/
     );
 
-  if (turnMatch) {
+  if (match) {
     return {
-      type: "TURN",
+      type: "MOVE_BACKWARD",
+      distance: Number(match[1]),
+      raw: normalized
+    };
+  }
 
-      direction:
-        turnMatch[1].toLowerCase(),
+  match =
+    normalized.match(
+      /^ROBOT TURN LEFT(?: ([0-9]+(?:\.[0-9]+)?))?$/
+    );
 
-      degrees:
-        turnMatch[2]
-          ? Number(turnMatch[2])
-          : 90,
+  if (match) {
+    return {
+      type: "TURN_LEFT",
+      degrees: match[1]
+        ? Number(match[1])
+        : 90,
+      raw: normalized
+    };
+  }
+
+  match =
+    normalized.match(
+      /^ROBOT TURN RIGHT(?: ([0-9]+(?:\.[0-9]+)?))?$/
+    );
+
+  if (match) {
+    return {
+      type: "TURN_RIGHT",
+      degrees: match[1]
+        ? Number(match[1])
+        : 90,
+      raw: normalized
     };
   }
 
   return null;
 }
 
-// ============================================================
-// ROBOT COMMAND SAFETY VALIDATION
-// ============================================================
+/* ======================================================
+   ROBOT SAFETY VALIDATION
+====================================================== */
 
 function validateRobotCommand(
   command
@@ -763,935 +756,786 @@ function validateRobotCommand(
   if (!command) {
     return {
       allowed: false,
-
-      reason:
-        "No valid robot command was detected.",
+      reason: "Unknown robot command."
     };
   }
 
-  if (
-    SYSTEM_STATE.emergencyStop
-  ) {
+  if (ROBOT.emergencyStop) {
     return {
       allowed: false,
-
       reason:
-        "Emergency Stop is active.",
+        "Emergency stop is active. Resume the robot first."
     };
   }
 
-  if (
-    command.type === "STATUS"
-  ) {
-    return {
-      allowed: true,
-    };
+  switch (command.type) {
+    case "STATUS":
+      return {
+        allowed: true
+      };
+
+    case "STOP":
+      return {
+        allowed: true
+      };
+
+    case "GO_CHARGING":
+      return {
+        allowed: true
+      };
+
+    case "MOVE_FORWARD":
+    case "MOVE_BACKWARD":
+      if (
+        !Number.isFinite(command.distance) ||
+        command.distance <= 0
+      ) {
+        return {
+          allowed: false,
+          reason:
+            "Movement distance must be greater than zero."
+        };
+      }
+
+      if (
+        command.distance >
+        ROBOT_SAFETY.maxMoveDistance
+      ) {
+        return {
+          allowed: false,
+          reason:
+            `Maximum movement distance is ${ROBOT_SAFETY.maxMoveDistance}.`
+        };
+      }
+
+      if (
+        ROBOT.battery <
+        ROBOT_SAFETY.minimumBatteryPercent
+      ) {
+        return {
+          allowed: false,
+          reason:
+            "Battery is too low for movement."
+        };
+      }
+
+      return {
+        allowed: true
+      };
+
+    case "TURN_LEFT":
+    case "TURN_RIGHT":
+      if (
+        !Number.isFinite(command.degrees) ||
+        command.degrees <= 0
+      ) {
+        return {
+          allowed: false,
+          reason:
+            "Turn angle must be greater than zero."
+        };
+      }
+
+      if (
+        command.degrees >
+        ROBOT_SAFETY.maxTurnDegrees
+      ) {
+        return {
+          allowed: false,
+          reason:
+            `Maximum turn angle is ${ROBOT_SAFETY.maxTurnDegrees} degrees.`
+        };
+      }
+
+      return {
+        allowed: true
+      };
+
+    default:
+      return {
+        allowed: false,
+        reason:
+          "Unsupported robot command."
+      };
   }
+}
 
-  if (
-    command.type === "STOP"
-  ) {
-    return {
-      allowed: true,
-    };
-  }
+/* ======================================================
+   ROBOT STATUS
+====================================================== */
 
-  if (
-    command.type === "MOVE"
-  ) {
-    if (
-      !Number.isFinite(
-        command.distance
-      )
-    ) {
-      return {
-        allowed: false,
-
-        reason:
-          "Invalid movement distance.",
-      };
-    }
-
-    if (
-      command.distance <= 0
-    ) {
-      return {
-        allowed: false,
-
-        reason:
-          "Movement distance must be greater than zero.",
-      };
-    }
-
-    if (
-      command.distance >
-      ROBOT_SAFETY.maximumMoveDistance
-    ) {
-      return {
-        allowed: false,
-
-        reason:
-          `Maximum movement distance is ` +
-          `${ROBOT_SAFETY.maximumMoveDistance} units.`,
-      };
-    }
-
-    if (
-      ROBOT_STATE.battery <
-      ROBOT_SAFETY.minimumBatteryForMovement
-    ) {
-      return {
-        allowed: false,
-
-        reason:
-          `Battery is too low for movement. ` +
-          `Current battery: ${ROBOT_STATE.battery}%.`,
-      };
-    }
-  }
-
-  if (
-    command.type === "TURN"
-  ) {
-    if (
-      !Number.isFinite(
-        command.degrees
-      )
-    ) {
-      return {
-        allowed: false,
-
-        reason:
-          "Invalid turning angle.",
-      };
-    }
-
-    if (
-      command.degrees <= 0
-    ) {
-      return {
-        allowed: false,
-
-        reason:
-          "Turning angle must be greater than zero.",
-      };
-    }
-
-    if (
-      command.degrees >
-      ROBOT_SAFETY.maximumTurnDegrees
-    ) {
-      return {
-        allowed: false,
-
-        reason:
-          `Maximum turn is ` +
-          `${ROBOT_SAFETY.maximumTurnDegrees} degrees.`,
-      };
-    }
-  }
-
+function getRobotStatus() {
   return {
-    allowed: true,
+    id: ROBOT.id,
+
+    mode: ROBOT.mode,
+
+    status: ROBOT.status,
+
+    position: {
+      x: ROBOT.position.x,
+      y: ROBOT.position.y
+    },
+
+    heading: ROBOT.heading,
+
+    battery: ROBOT.battery,
+
+    charging: ROBOT.charging,
+
+    emergencyStop:
+      ROBOT.emergencyStop,
+
+    lastCommand:
+      ROBOT.lastCommand,
+
+    lastCommandAt:
+      ROBOT.lastCommandAt,
+
+    lastAuthorizationId:
+      ROBOT.lastAuthorizationId,
+
+    controller:
+      getRobotControllerHealth()
   };
 }
 
-// ============================================================
-// ROBOT STATUS
-// ============================================================
+function robotStatusText() {
+  const status =
+    getRobotStatus();
 
-function getRobotStatusText() {
-  const controllerHealth =
-    getRobotControllerHealth();
-
-  return (
-    "🤖 ROBOT STATUS\n\n" +
-
-    `ID: ${ROBOT_STATE.id}\n` +
-
-    `Mode: ${POLICY.capabilities.robotics.mode.toUpperCase()}\n` +
-
-    `Status: ${ROBOT_STATE.status}\n` +
-
-    `Battery: ${ROBOT_STATE.battery}%\n` +
-
-    `Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})\n` +
-
-    `Orientation: ${ROBOT_STATE.orientation}°\n` +
-
-    `Destination: ${
-      ROBOT_STATE.destination
-        ? `(${ROBOT_STATE.destination.x}, ${ROBOT_STATE.destination.y})`
-        : "None"
-    }\n` +
-
-    `Last Task: ${
-      ROBOT_STATE.lastTask || "None"
-    }\n` +
-
-    `Emergency Stop: ${
-      SYSTEM_STATE.emergencyStop
-        ? "ON"
-        : "OFF"
-    }\n` +
-
-    "Safety Controller: ACTIVE\n" +
-
-    `Secure Controller: ${
-      controllerHealth.enabled
-        ? "ACTIVE"
-        : "NOT CONFIGURED"
-    }\n` +
-
-    `Controller Heartbeat: ${
-      controllerHealth.heartbeat
-    }\n` +
-
-    `Hardware Connection: ${
-      ROBOT_CONTROLLER.hardwareConnected
-        ? "CONNECTED"
-        : "NOT CONNECTED"
-    }\n` +
-
-    "Simulation: ACTIVE"
-  );
+  return [
+    "🤖 ROBOT STATUS",
+    "",
+    `ID: ${status.id}`,
+    `Mode: ${status.mode.toUpperCase()}`,
+    `Status: ${status.status}`,
+    `Position: (${status.position.x}, ${status.position.y})`,
+    `Heading: ${status.heading}°`,
+    `Battery: ${status.battery}%`,
+    `Charging: ${status.charging ? "YES" : "NO"}`,
+    `Emergency Stop: ${status.emergencyStop ? "ON" : "OFF"}`,
+    `Controller: ${status.controller.connected ? "CONNECTED" : "WAITING"}`
+  ].join("\n");
 }
 
-// ============================================================
-// ROBOT ROUTE CALCULATOR
-// ============================================================
-
-function calculateRobotRoute(
-  start,
-  destination
-) {
-  const route = [];
-
-  let currentX = start.x;
-
-  let currentY = start.y;
-
-  while (
-    currentX !==
-    destination.x
-  ) {
-    currentX +=
-      destination.x >
-      currentX
-        ? 1
-        : -1;
-
-    route.push({
-      x: currentX,
-
-      y: currentY,
-    });
-  }
-
-  while (
-    currentY !==
-    destination.y
-  ) {
-    currentY +=
-      destination.y >
-      currentY
-        ? 1
-        : -1;
-
-    route.push({
-      x: currentX,
-
-      y: currentY,
-    });
-  }
-
-  return route;
-}
-
-// ============================================================
-// SIMULATED ROBOT MOVEMENT
-// ============================================================
+/* ======================================================
+   SIMULATION - MOVEMENT
+====================================================== */
 
 async function simulateMove(
-  sender,
-  command,
+  direction,
+  distance,
   authorizationId
 ) {
-  ROBOT_STATE.status =
-    "MOVING";
+  ROBOT.status = "MOVING";
 
-  ROBOT_STATE.currentCommand =
-    command;
+  ROBOT.lastCommand =
+    `MOVE_${direction}`;
 
-  ROBOT_STATE.lastTask =
-    JSON.stringify(command);
-
-  ROBOT_STATE.lastUpdated =
+  ROBOT.lastCommandAt =
     new Date().toISOString();
 
-  recordAuditEvent(
+  await recordAuditEvent(
     "ROBOT_MOVEMENT_STARTED",
     {
-      sender:
-        normalizeWhatsAppNumber(
-          sender
-        ),
-
-      command,
-
-      authorizationId:
-        authorizationId || null,
+      command:
+        `MOVE_${direction}`,
+      authorizationId,
+      direction,
+      distance,
+      position: {
+        ...ROBOT.position
+      }
     }
   );
 
   const steps =
-    Math.ceil(command.distance);
+    Math.ceil(distance);
 
   for (
     let i = 0;
     i < steps;
     i++
   ) {
-    if (
-      SYSTEM_STATE.emergencyStop
-    ) {
-      ROBOT_STATE.status =
-        "STOPPED";
+    if (ROBOT.emergencyStop) {
+      ROBOT.status = "STOPPED";
 
-      ROBOT_STATE.currentCommand =
-        null;
-
-      recordAuditEvent(
+      await recordAuditEvent(
         "ROBOT_MOVEMENT_INTERRUPTED",
         {
-          sender:
-            normalizeWhatsAppNumber(
-              sender
-            ),
-
+          command:
+            `MOVE_${direction}`,
+          authorizationId,
           reason:
-            "Emergency Stop activated.",
+            "Emergency stop activated."
         }
       );
 
-      return (
-        "🛑 ROBOT MOVEMENT INTERRUPTED\n\n" +
-        "Emergency Stop was activated."
-      );
+      return {
+        success: false,
+        stopped: true
+      };
     }
 
-    await new Promise(
-      (resolve) =>
-        setTimeout(
-          resolve,
-          ROBOT_SAFETY
-            .simulationStepDelayMs
-        )
-    );
+    if (direction === "FORWARD") {
+      const radians =
+        ROBOT.heading *
+        Math.PI /
+        180;
 
-    const movement =
-      command.direction ===
-      "forward"
-        ? 1
-        : -1;
+      ROBOT.position.x +=
+        Math.round(Math.cos(radians));
 
-    const radians =
-      (ROBOT_STATE.orientation *
-        Math.PI) /
-      180;
+      ROBOT.position.y +=
+        Math.round(Math.sin(radians));
+    } else {
+      const radians =
+        ROBOT.heading *
+        Math.PI /
+        180;
 
-    ROBOT_STATE.position.x +=
-      Math.round(
-        Math.sin(radians) *
-          movement
-      );
+      ROBOT.position.x -=
+        Math.round(Math.cos(radians));
 
-    ROBOT_STATE.position.y +=
-      Math.round(
-        Math.cos(radians) *
-          movement
-      );
+      ROBOT.position.y -=
+        Math.round(Math.sin(radians));
+    }
 
-    ROBOT_STATE.battery =
+    ROBOT.battery =
       Math.max(
         0,
-
-        ROBOT_STATE.battery -
-          ROBOT_SAFETY
-            .batteryUsagePerStep
+        ROBOT.battery - 1
       );
 
-    ROBOT_STATE.lastUpdated =
-      new Date().toISOString();
-
-    console.log(
-      `[ROBOT] Position: ` +
-        `(${ROBOT_STATE.position.x}, ` +
-        `${ROBOT_STATE.position.y}) ` +
-        `Battery: ${ROBOT_STATE.battery}%`
+    await new Promise(
+      resolve =>
+        setTimeout(resolve, 150)
     );
   }
 
-  ROBOT_STATE.status =
-    "IDLE";
+  ROBOT.status = "IDLE";
 
-  ROBOT_STATE.currentCommand =
-    null;
-
-  ROBOT_STATE.lastUpdated =
-    new Date().toISOString();
-
-  const audit =
-    recordAuditEvent(
-      "ROBOT_MOVEMENT_COMPLETED",
-      {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-  ),
-
-        command,
-
-        position:
-          ROBOT_STATE.position,
-
-        battery:
-          ROBOT_STATE.battery,
-
-        authorizationId:
-          authorizationId || null,
-      }
-    );
-
-  return (
-    "✅ ROBOT MOVEMENT COMPLETED\n\n" +
-    `Direction: ${command.direction}\n` +
-    `Distance: ${command.distance}\n` +
-    `Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})\n` +
-    `Battery: ${ROBOT_STATE.battery}%\n` +
-    `Audit ID: ${audit.id}`
+  await recordAuditEvent(
+    "ROBOT_MOVEMENT_COMPLETED",
+    {
+      command:
+        `MOVE_${direction}`,
+      authorizationId,
+      direction,
+      distance,
+      position: {
+        ...ROBOT.position
+      },
+      battery:
+        ROBOT.battery
+    }
   );
+
+  return {
+    success: true,
+    position: {
+      ...ROBOT.position
+    },
+    battery:
+      ROBOT.battery
+  };
 }
 
-// ============================================================
-// SIMULATED ROBOT TURN
-// ============================================================
+/* ======================================================
+   SIMULATION - TURN
+====================================================== */
 
 async function simulateTurn(
-  sender,
-  command,
+  direction,
+  degrees,
   authorizationId
 ) {
-  ROBOT_STATE.status =
-    "TURNING";
+  ROBOT.status = "TURNING";
 
-  ROBOT_STATE.currentCommand =
-    command;
+  ROBOT.lastCommand =
+    `TURN_${direction}`;
 
-  ROBOT_STATE.lastTask =
-    JSON.stringify(command);
-
-  await new Promise(
-    (resolve) =>
-      setTimeout(
-        resolve,
-        ROBOT_SAFETY
-          .simulationStepDelayMs
-      )
-  );
-
-  if (
-    SYSTEM_STATE.emergencyStop
-  ) {
-    ROBOT_STATE.status =
-      "STOPPED";
-
-    ROBOT_STATE.currentCommand =
-      null;
-
-    recordAuditEvent(
-      "ROBOT_TURN_INTERRUPTED",
-      {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
-
-        reason:
-          "Emergency Stop activated.",
-      }
-    );
-
-    return (
-      "🛑 ROBOT TURN INTERRUPTED\n\n" +
-      "Emergency Stop was activated."
-    );
-  }
-
-  if (
-    command.direction ===
-    "left"
-  ) {
-    ROBOT_STATE.orientation -=
-      command.degrees;
-  } else {
-    ROBOT_STATE.orientation +=
-      command.degrees;
-  }
-
-  ROBOT_STATE.orientation =
-    ((ROBOT_STATE.orientation %
-      360) +
-      360) %
-    360;
-
-  ROBOT_STATE.status =
-    "IDLE";
-
-  ROBOT_STATE.currentCommand =
-    null;
-
-  ROBOT_STATE.lastUpdated =
+  ROBOT.lastCommandAt =
     new Date().toISOString();
 
-  const audit =
-    recordAuditEvent(
-      "ROBOT_TURN_COMPLETED",
-      {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
-
-        command,
-
-        orientation:
-          ROBOT_STATE.orientation,
-
-        authorizationId:
-          authorizationId || null,
-      }
-    );
-
-  return (
-    "✅ ROBOT TURN COMPLETED\n\n" +
-    `Direction: ${command.direction}\n` +
-    `Degrees: ${command.degrees}\n` +
-    `Orientation: ${ROBOT_STATE.orientation}°\n` +
-    `Audit ID: ${audit.id}`
-  );
+  await recordAuditEvent(
+    "ROBOT_TURN_STARTED",
+    {
+      command:
+        `TURN_${direction}`,
+      authorizationId,
+      direction,
+      degrees,
+      heading:
+        ROBOT.heading
     }
-// ============================================================
-// ROBOT CHARGING SIMULATION
-// ============================================================
+  );
+
+  await new Promise(
+    resolve =>
+      setTimeout(resolve, 300)
+  );
+
+  if (direction === "LEFT") {
+    ROBOT.heading -= degrees;
+  } else {
+    ROBOT.heading += degrees;
+  }
+
+  ROBOT.heading =
+    ((ROBOT.heading % 360) + 360) % 360;
+
+  ROBOT.status = "IDLE";
+
+  await recordAuditEvent(
+    "ROBOT_TURN_COMPLETED",
+    {
+      command:
+        `TURN_${direction}`,
+      authorizationId,
+      direction,
+      degrees,
+      heading:
+        ROBOT.heading
+    }
+  );
+
+  return {
+    success: true,
+    heading:
+      ROBOT.heading
+  };
+}
+
+/* ======================================================
+   SIMULATION - CHARGING
+====================================================== */
 
 async function simulateCharging(
-  sender,
   authorizationId
 ) {
-  const route =
-    calculateRobotRoute(
-      ROBOT_STATE.position,
-      CHARGING_STATION
-    );
+  const destination = {
+    x: 5,
+    y: 5
+  };
 
-  ROBOT_STATE.status =
-    "MOVING";
+  ROBOT.status =
+    "MOVING_TO_CHARGER";
 
-  ROBOT_STATE.destination =
-    CHARGING_STATION;
+  ROBOT.charging = false;
 
-  ROBOT_STATE.currentCommand =
-    {
-      type: "GO_CHARGING",
-    };
+  ROBOT.lastCommand =
+    "GO_CHARGING";
 
-  recordAuditEvent(
-    "ROBOT_CHARGING_ROUTE_STARTED",
-    {
-      sender:
-        normalizeWhatsAppNumber(
-          sender
-        ),
+  ROBOT.lastCommandAt =
+    new Date().toISOString();
 
-      destination:
-        CHARGING_STATION,
+  const route = [];
 
-      routeLength:
-        route.length,
+  let x =
+    ROBOT.position.x;
 
-      authorizationId:
-        authorizationId || null,
-    }
-  );
+  let y =
+    ROBOT.position.y;
 
-  for (
-    const step of route
+  while (
+    x !== destination.x ||
+    y !== destination.y
   ) {
-    if (
-      SYSTEM_STATE.emergencyStop
-    ) {
-      ROBOT_STATE.status =
+    if (ROBOT.emergencyStop) {
+      ROBOT.status =
         "STOPPED";
 
-      ROBOT_STATE.destination =
-        null;
-
-      ROBOT_STATE.currentCommand =
-        null;
-
-      recordAuditEvent(
-        "ROBOT_CHARGING_ROUTE_INTERRUPTED",
+      await recordAuditEvent(
+        "ROBOT_CHARGING_INTERRUPTED",
         {
-          sender:
-            normalizeWhatsAppNumber(
-              sender
-            ),
-
+          authorizationId,
           reason:
-            "Emergency Stop activated.",
+            "Emergency stop activated."
         }
       );
 
-      return (
-        "🛑 ROBOT CHARGING ROUTE INTERRUPTED\n\n" +
-        `Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})`
-      );
+      return {
+        success: false,
+        stopped: true
+      };
     }
 
-    await new Promise(
-      (resolve) =>
-        setTimeout(
-          resolve,
-          ROBOT_SAFETY
-            .simulationStepDelayMs
-        )
-    );
+    if (x < destination.x) {
+      x++;
+    } else if (
+      x > destination.x
+    ) {
+      x--;
+    }
 
-    ROBOT_STATE.position = {
-      x: step.x,
-      y: step.y,
+    if (y < destination.y) {
+      y++;
+    } else if (
+      y > destination.y
+    ) {
+      y--;
+    }
+
+    route.push({
+      x,
+      y
+    });
+
+    ROBOT.position = {
+      x,
+      y
     };
 
-    ROBOT_STATE.battery =
+    ROBOT.battery =
       Math.max(
         0,
-
-        ROBOT_STATE.battery -
-          ROBOT_SAFETY
-            .batteryUsagePerStep
+        ROBOT.battery - 1
       );
+
+    await new Promise(
+      resolve =>
+        setTimeout(resolve, 150)
+    );
   }
 
-  ROBOT_STATE.status =
+  await recordAuditEvent(
+    "ROBOT_CHARGING_ROUTE_STARTED",
+    {
+      authorizationId,
+      destination,
+      routeLength:
+        route.length
+    }
+  );
+
+  ROBOT.status =
     "CHARGING";
 
-  ROBOT_STATE.currentCommand =
-    null;
+  ROBOT.charging = true;
 
   await new Promise(
-    (resolve) =>
-      setTimeout(
-        resolve,
-        500
-      )
+    resolve =>
+      setTimeout(resolve, 500)
   );
 
-  ROBOT_STATE.battery =
-    100;
+  ROBOT.battery = 100;
 
-  ROBOT_STATE.status =
-    "IDLE";
+  ROBOT.charging = false;
 
-  ROBOT_STATE.destination =
-    null;
+  ROBOT.status = "IDLE";
 
-  ROBOT_STATE.lastUpdated =
-    new Date().toISOString();
-
-  const audit =
-    recordAuditEvent(
+  const auditId =
+    await recordAuditEvent(
       "ROBOT_CHARGING_COMPLETED",
       {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
-
-        destination:
-          CHARGING_STATION,
-
-        finalPosition:
-          ROBOT_STATE.position,
-
+        authorizationId,
+        destination,
+        position: {
+          ...ROBOT.position
+        },
         battery:
-          ROBOT_STATE.battery,
-
-        authorizationId:
-          authorizationId || null,
+          ROBOT.battery
       }
     );
 
-  return (
-    "🔋 ROBOT CHARGING COMPLETED\n\n" +
-    "Destination reached.\n" +
-    `Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})\n` +
-    `Battery: ${ROBOT_STATE.battery}%\n` +
-    `Audit ID: ${audit.id}`
-  );
-}
-
-// ============================================================
-// ROBOT EXECUTION
-// ============================================================
+  return {
+    success: true,
+    position: {
+      ...ROBOT.position
+    },
+    battery:
+      ROBOT.battery,
+    auditId
+  };
+    }
+/* ======================================================
+   ROBOT EXECUTION
+====================================================== */
 
 async function executeRobotCommand(
-  sender,
   command,
-  options = {}
+  authorizationId
 ) {
-  const normalizedSender =
-    normalizeWhatsAppNumber(sender);
+  const validation =
+    validateRobotCommand(command);
 
-  if (!isAdmin(sender)) {
-    recordAuditEvent(
-      "UNAUTHORIZED_ROBOT_EXECUTION_ATTEMPT",
-      {
-        sender:
-          normalizedSender,
-
-        command,
-      }
-    );
-
-    return (
-      "⛔ Robot command denied.\n\n" +
-      "Administrator authorization is required."
-    );
-  }
-
-  if (
-    !options.authorized
-  ) {
-    recordAuditEvent(
-      "ROBOT_EXECUTION_BLOCKED_NO_AUTHORIZATION",
-      {
-        sender:
-          normalizedSender,
-
-        command,
-      }
-    );
-
-    return (
-      "⛔ Robot action requires explicit human authorization."
-    );
-  }
-
-  const safety =
-    validateRobotCommand(
-      command
-    );
-
-  if (!safety.allowed) {
-    recordAuditEvent(
+  if (!validation.allowed) {
+    await recordAuditEvent(
       "ROBOT_COMMAND_REJECTED",
       {
-        sender:
-          normalizedSender,
-
-        command,
-
+        command:
+          command?.raw || null,
+        authorizationId,
         reason:
-          safety.reason,
+          validation.reason
       }
     );
 
-    return (
-      "⛔ ROBOT COMMAND REJECTED\n\n" +
-      `Reason: ${safety.reason}`
-    );
+    return {
+      success: false,
+      reason:
+        validation.reason
+    };
   }
 
-  if (
-    command.type === "STATUS"
-  ) {
-    recordAuditEvent(
-      "ROBOT_STATUS_REQUESTED",
-      {
-        sender:
-          normalizedSender,
-      }
-    );
-
-    return getRobotStatusText();
+  if (command.type === "STATUS") {
+    return {
+      success: true,
+      status:
+        getRobotStatus()
+    };
   }
 
-  if (
-    command.type === "STOP"
-  ) {
-    ROBOT_STATE.status =
+  if (command.type === "STOP") {
+    ROBOT.emergencyStop = true;
+
+    ROBOT.status =
       "STOPPED";
 
-    ROBOT_STATE.currentCommand =
-      null;
+    ROBOT.charging = false;
 
-    recordAuditEvent(
+    await recordAuditEvent(
       "ROBOT_STOPPED",
       {
-        sender:
-          normalizedSender,
+        command: "STOP",
+        authorizationId
       }
     );
 
-    return (
-      "🛑 ROBOT STOPPED\n\n" +
-      "Simulation movement has stopped."
-    );
+    return {
+      success: true,
+      stopped: true
+    };
   }
 
-  if (
-    command.type === "MOVE"
-  ) {
-    return await simulateMove(
-      sender,
-      command,
-      options.authorizationId
-    );
-  }
-
-  if (
-    command.type === "TURN"
-  ) {
-    return await simulateTurn(
-      sender,
-      command,
-      options.authorizationId
-    );
-  }
+  ROBOT.lastAuthorizationId =
+    authorizationId;
 
   if (
     command.type ===
     "GO_CHARGING"
   ) {
-    return await simulateCharging(
-      sender,
-      options.authorizationId
+    return simulateCharging(
+      authorizationId
     );
   }
 
-  return (
-    "⚠️ Robot command is not implemented."
-  );
-      }
-  // ============================================================
-// ROBOT CONTROLLER DISPATCH
-// ============================================================
+  if (
+    command.type ===
+    "MOVE_FORWARD"
+  ) {
+    return simulateMove(
+      "FORWARD",
+      command.distance,
+      authorizationId
+    );
+  }
 
-async function robotControllerDispatch(
-  sender,
-  command,
-  authorizationId
+  if (
+    command.type ===
+    "MOVE_BACKWARD"
+  ) {
+    return simulateMove(
+      "BACKWARD",
+      command.distance,
+      authorizationId
+    );
+  }
+
+  if (
+    command.type ===
+    "TURN_LEFT"
+  ) {
+    return simulateTurn(
+      "LEFT",
+      command.degrees,
+      authorizationId
+    );
+  }
+
+  if (
+    command.type ===
+    "TURN_RIGHT"
+  ) {
+    return simulateTurn(
+      "RIGHT",
+      command.degrees,
+      authorizationId
+    );
+  }
+
+  return {
+    success: false,
+    reason:
+      "Command execution is not implemented."
+  };
+}
+
+/* ======================================================
+   CONTROLLER GRANT CONSUMPTION
+====================================================== */
+
+async function consumeControllerGrantAndExecute(
+  grantId
 ) {
-  recordAuditEvent(
-    "ROBOT_CONTROLLER_DISPATCH",
+  const grant =
+    controllerGrants.get(grantId);
+
+  if (!grant) {
+    await recordAuditEvent(
+      "ROBOT_CONTROLLER_GRANT_REJECTED",
+      {
+        grantId,
+        reason:
+          "Grant not found."
+      }
+    );
+
+    return {
+      success: false,
+      reason:
+        "Authorization grant not found."
+    };
+  }
+
+  if (grant.consumed) {
+    await recordAuditEvent(
+      "ROBOT_CONTROLLER_GRANT_REJECTED",
+      {
+        grantId,
+        authorizationId:
+          grant.authorizationId,
+        reason:
+          "Grant already consumed."
+      }
+    );
+
+    return {
+      success: false,
+      reason:
+        "Authorization grant has already been consumed."
+    };
+  }
+
+  if (
+    Date.now() >
+    grant.expiresAt
+  ) {
+    controllerGrants.delete(
+      grantId
+    );
+
+    await recordAuditEvent(
+      "ROBOT_CONTROLLER_GRANT_REJECTED",
+      {
+        grantId,
+        authorizationId:
+          grant.authorizationId,
+        reason:
+          "Grant expired."
+      }
+    );
+
+    return {
+      success: false,
+      reason:
+        "Authorization grant has expired."
+    };
+  }
+
+  if (ROBOT.emergencyStop) {
+    return {
+      success: false,
+      reason:
+        "Emergency stop is active."
+    };
+  }
+
+  /*
+  Mark consumed BEFORE execution.
+  This prevents replay if the same grant is
+  submitted more than once.
+  */
+
+  grant.consumed = true;
+
+  controllerGrants.delete(
+    grantId
+  );
+
+  await recordAuditEvent(
+    "ROBOT_CONTROLLER_GRANT_CONSUMED",
     {
-      robotId:
-        ROBOT_STATE.id,
-
-      sender:
-        normalizeWhatsAppNumber(
-          sender
-        ),
-
-      command,
-
+      grantId,
       authorizationId:
-        authorizationId || null,
-
-      mode:
-        ROBOT_CONTROLLER.mode,
+        grant.authorizationId,
+      command:
+        grant.command
     }
   );
 
-  if (
-    ROBOT_CONTROLLER.mode ===
-    "simulation"
-  ) {
-    return await executeRobotCommand(
-      sender,
-      command,
-      {
-        authorized: true,
-
-        authorizationId,
-      }
+  const command =
+    parseRobotCommand(
+      grant.command
     );
+
+  if (!command) {
+    return {
+      success: false,
+      reason:
+        "Stored command could not be parsed."
+    };
   }
 
-  return (
-    "⚠️ Hardware controller mode is not enabled."
+  return executeRobotCommand(
+    command,
+    grant.authorizationId
   );
-}
-
-// ============================================================
-// ROBOT COMMAND HELP
-// ============================================================
+    }
+/* ======================================================
+   ROBOT HELP
+====================================================== */
 
 function robotHelp() {
-  return (
-    "🤖 SILENT STRATEGIST ROBOT COMMANDS\n\n" +
-
-    "ROBOT STATUS\n" +
-    "Check robot state.\n\n" +
-
-    "ROBOT MOVE FORWARD 2\n" +
-    "Move forward 2 simulation units.\n\n" +
-
-    "ROBOT MOVE BACKWARD 2\n" +
-    "Move backward 2 simulation units.\n\n" +
-
-    "ROBOT TURN LEFT 90\n" +
-    "Turn left 90 degrees.\n\n" +
-
-    "ROBOT TURN RIGHT 90\n" +
-    "Turn right 90 degrees.\n\n" +
-
-    "ROBOT GO CHARGING\n" +
-    "Navigate to the charging station.\n\n" +
-
-    "STOP\n" +
-    "Activate the system Emergency Stop.\n\n" +
-
-    "RESUME\n" +
-    "Release Emergency Stop.\n\n" +
-
-    "Every executable robot action requires administrator approval."
-  );
+  return [
+    "🤖 ROBOT COMMANDS",
+    "",
+    "ROBOT STATUS",
+    "ROBOT GO TO CHARGING STATION",
+    "ROBOT MOVE FORWARD 5",
+    "ROBOT MOVE BACKWARD 5",
+    "ROBOT TURN LEFT 90",
+    "ROBOT TURN RIGHT 90",
+    "",
+    "Every physical action requires human authorization.",
+    "",
+    "Global safety controls:",
+    "STOP",
+    "RESUME",
+    "STATUS"
+  ].join("\n");
 }
 
-// ============================================================
-// CONTROL COMMANDS
-// ============================================================
+/* ======================================================
+   GLOBAL CONTROL COMMANDS
+====================================================== */
 
 function isControlCommand(text) {
-  const command =
+  const normalized =
     String(text || "")
       .trim()
       .toUpperCase();
 
-  return (
-    command === "STOP" ||
-    command === "RESUME" ||
-    command === "STATUS" ||
-    command === "APPROVE" ||
-    command === "DENY"
-  );
+  return [
+    "APPROVE",
+    "DENY",
+    "STOP",
+    "RESUME",
+    "STATUS"
+  ].includes(normalized);
 }
-
-// ============================================================
-// CONTROL COMMAND HANDLER
-// ============================================================
 
 async function handleControlCommand(
   sender,
@@ -1702,944 +1546,687 @@ async function handleControlCommand(
       .trim()
       .toUpperCase();
 
-  if (
-    command === "APPROVE"
-  ) {
-    if (!isAdmin(sender)) {
-      recordAuditEvent(
-        "UNAUTHORIZED_APPROVAL_ATTEMPT",
-        {
-          sender:
-            normalizeWhatsAppNumber(
-              sender
-            ),
-        }
-      );
-
-      return (
-        "⛔ Authorization denied.\n\n" +
-        "Only the authorized administrator can approve actions."
-      );
-    }
-
-    const pending =
-      getPendingAuthorization(
-        sender
-      );
-
-    if (!pending) {
-      return (
-        "ℹ️ No pending authorization request was found."
-      );
-    }
-
-    if (
-      SYSTEM_STATE.emergencyStop
-    ) {
-      clearAuthorization(
-        sender,
-        "emergency_stop_active"
-      );
-
-      return (
-        "🛑 APPROVAL BLOCKED\n\n" +
-        "Emergency Stop is active.\n" +
-        "The pending action has been cancelled.\n\n" +
-        "Use RESUME and submit the command again."
-      );
-    }
-
-    recordAuditEvent(
-      "AUTHORIZATION_APPROVED",
+  if (!isAdmin(sender)) {
+    await recordAuditEvent(
+      "CONTROL_COMMAND_REJECTED",
       {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
-
-        task:
-          pending.task,
-
-        originalText:
-          pending.originalText,
-
-        command:
-          pending.command,
+        sender,
+        command,
+        reason:
+          "Unauthorized sender."
       }
     );
 
-    pendingAuthorizations.delete(
-      normalizeWhatsAppNumber(
-        sender
-      )
-    );
-
-    if (
-      pending.task ===
-      "robotics"
-    ) {
-      return await robotControllerDispatch(
-        sender,
-
-        pending.command,
-
-        `AUTH-${Date.now()}`
-      );
-    }
-
-    return (
-      "⚠️ Approved action type is not executable."
-    );
+    return {
+      handled: true,
+      response:
+        "⛔ You are not authorized to control this system."
+    };
   }
 
-  if (
-    command === "DENY"
-  ) {
-    if (!isAdmin(sender)) {
-      recordAuditEvent(
-        "UNAUTHORIZED_DENIAL_ATTEMPT",
-        {
-          sender:
-            normalizeWhatsAppNumber(
-              sender
-            ),
-        }
-      );
+  /* --------------------------------------------------
+     APPROVE
+  -------------------------------------------------- */
 
-      return (
-        "⛔ Only the authorized administrator can deny pending actions."
-      );
-    }
-
-    const pending =
-      getPendingAuthorization(
-        sender
-      );
-
-    if (!pending) {
-      return (
-        "ℹ️ No pending authorization request was found."
-      );
-    }
-
-    pendingAuthorizations.delete(
-      normalizeWhatsAppNumber(
-        sender
-      )
-    );
-
-    recordAuditEvent(
-      "AUTHORIZATION_DENIED",
-      {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
-
-        task:
-          pending.task,
-
-        originalText:
-          pending.originalText,
-
-        command:
-          pending.command,
-      }
-    );
-
-    return (
-      "❌ ACTION DENIED\n\n" +
-      `Task: ${pending.originalText}\n` +
-      "Status: Cancelled\n" +
-      "No robot action was executed."
-    );
-  }
-
-  if (
-    command === "STOP"
-  ) {
-    if (!isAdmin(sender)) {
-      recordAuditEvent(
-        "UNAUTHORIZED_STOP_ATTEMPT",
-        {
-          sender:
-            normalizeWhatsAppNumber(
-              sender
-            ),
-        }
-      );
-
-      return (
-        "⛔ STOP command denied.\n\n" +
-        "Only the authorized administrator can control the system."
-      );
-    }
-
-    SYSTEM_STATE.emergencyStop =
-      true;
-
-    ROBOT_STATE.status =
-      "STOPPED";
-
-    ROBOT_STATE.currentCommand =
-      null;
+  if (command === "APPROVE") {
+    let selected = null;
 
     for (
-      const [
-        pendingSender,
-        pending,
-      ] of pendingAuthorizations.entries()
+      const authorization of
+      pendingAuthorizations.values()
     ) {
-      recordAuditEvent(
-        "AUTHORIZATION_CANCELLED_BY_EMERGENCY_STOP",
-        {
-          sender:
-            pendingSender,
-
-          task:
-            pending.task,
+      if (
+        authorization.sender ===
+        sender
+      ) {
+        if (
+          !selected ||
+          authorization.createdAt >
+            selected.createdAt
+        ) {
+          selected =
+            authorization;
         }
-      );
+      }
     }
 
-    pendingAuthorizations.clear();
-
-    recordAuditEvent(
-      "EMERGENCY_STOP_ACTIVATED",
-      {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
-      }
-    );
-
-    return (
-      "🛑 EMERGENCY STOP ACTIVATED\n\n" +
-      "All executable actions are blocked.\n" +
-      "Robot simulation has been stopped.\n" +
-      "Pending authorizations have been cancelled.\n\n" +
-      "Use RESUME to release the system."
-    );
-  }
-
-  if (
-    command === "RESUME"
-  ) {
-    if (!isAdmin(sender)) {
-      recordAuditEvent(
-        "UNAUTHORIZED_RESUME_ATTEMPT",
-        {
-          sender:
-            normalizeWhatsAppNumber(
-              sender
-            ),
-        }
-      );
-
-      return (
-        "⛔ RESUME command denied."
-      );
-    }
-
-    SYSTEM_STATE.emergencyStop =
-      false;
-
-    ROBOT_STATE.status =
-      "IDLE";
-
-    recordAuditEvent(
-      "EMERGENCY_STOP_RELEASED",
-      {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
-      }
-    );
-
-    return (
-      "🟢 SYSTEM RESUMED\n\n" +
-      "Emergency Stop: OFF\n" +
-      "Robot Controller: READY\n" +
-      "Simulation: ACTIVE"
-    );
-  }
-
-  if (
-    command === "STATUS"
-  ) {
-    if (!isAdmin(sender)) {
-      recordAuditEvent(
-        "UNAUTHORIZED_STATUS_ATTEMPT",
-        {
-          sender:
-            normalizeWhatsAppNumber(
-              sender
-            ),
-        }
-      );
-
-      return (
-        "⛔ STATUS access denied."
-      );
+    if (!selected) {
+      return {
+        handled: true,
+        response:
+          "⚠️ No pending authorization request was found."
+      };
     }
 
     const pending =
       getPendingAuthorization(
-        sender
+        selected.authorizationId
       );
 
-    recordAuditEvent(
-      "STATUS_REQUESTED",
+    if (!pending) {
+      return {
+        handled: true,
+        response:
+          "⚠️ That authorization has expired."
+      };
+    }
+
+    if (ROBOT.emergencyStop) {
+      return {
+        handled: true,
+        response:
+          "🛑 Emergency stop is active. Use RESUME before approving robot actions."
+      };
+    }
+
+    await recordAuditEvent(
+      "AUTHORIZATION_APPROVED",
       {
-        sender:
-          normalizeWhatsAppNumber(
-            sender
-          ),
+        sender,
+        command:
+          pending.command,
+        authorizationId:
+          pending.authorizationId
       }
     );
-    return (
-      "🧠 SILENT STRATEGIST STATUS\n\n" +
 
-      "System: ONLINE\n" +
-
-      "Policy Engine: ACTIVE\n" +
-
-      "AI Router: ACTIVE\n" +
-
-      "Verification: ACTIVE\n" +
-
-      "Audit Logging: ACTIVE\n" +
-
-      "Persistent Storage: PostgreSQL\n" +
-
-      "Human Authorization: ACTIVE\n" +
-
-      `Emergency Stop: ${
-        SYSTEM_STATE.emergencyStop
-          ? "ON"
-          : "OFF"
-      }\n` +
-
-      "Robot Controller: ACTIVE\n" +
-
-      `Robot Mode: ${
-        POLICY.capabilities
-          .robotics.mode
-          .toUpperCase()
-      }\n` +
-
-      `Robot Status: ${
-        ROBOT_STATE.status
-      }\n` +
-
-      `Robot Battery: ${
-        ROBOT_STATE.battery
-      }%\n` +
-
-      `Robot Position: (${
-        ROBOT_STATE.position.x
-      }, ${
-        ROBOT_STATE.position.y
-      })\n` +
-
-      `Robot Orientation: ${
-        ROBOT_STATE.orientation
-      }°\n` +
-
-      `Controller Security: ${
-        ROBOT_CONTROLLER.enabled
-          ? "ACTIVE"
-          : "NOT CONFIGURED"
-      }\n` +
-
-      `Controller Heartbeat: ${
-        getRobotControllerHealth()
-          .heartbeat
-      }\n` +
-
-      `Pending Authorization: ${
-        pending
-          ? "YES"
-          : "NO"
-      }\n` +
-
-      `Policy Version: ${
-        POLICY.version
-      }`
+    clearAuthorization(
+      pending.authorizationId
     );
+
+    const grantId =
+      createControllerGrant(
+        pending
+      );
+
+    await recordAuditEvent(
+      "ROBOT_CONTROLLER_GRANT_ISSUED",
+      {
+        sender,
+        command:
+          pending.command,
+        authorizationId:
+          pending.authorizationId,
+        grantId,
+        expiresAt:
+          new Date(
+            Date.now() +
+              CONTROLLER_GRANT_TIMEOUT_MS
+          ).toISOString()
+      }
+    );
+
+    /*
+    In simulation mode, the server itself consumes
+    the one-time controller grant.
+
+    In a future physical deployment, the authenticated
+    robot controller can consume the same grant through
+    POST /robot/controller/command.
+    */
+
+    const result =
+      await consumeControllerGrantAndExecute(
+        grantId
+      );
+
+    if (!result.success) {
+      return {
+        handled: true,
+        response:
+          `❌ Robot execution failed.\n\n${result.reason}`
+      };
+    }
+
+    if (
+      pending.command
+        .toUpperCase()
+        .includes("CHARGING")
+    ) {
+      return {
+        handled: true,
+        response: [
+          "🔋 ROBOT CHARGING COMPLETED",
+          "",
+          "Destination reached.",
+          `Position: (${ROBOT.position.x}, ${ROBOT.position.y})`,
+          `Battery: ${ROBOT.battery}%`,
+          `Audit ID: ${result.auditId || "recorded"}`
+        ].join("\n")
+      };
+    }
+
+    return {
+      handled: true,
+      response: [
+        "✅ ROBOT ACTION COMPLETED",
+        "",
+        `Command: ${pending.command}`,
+        `Position: (${ROBOT.position.x}, ${ROBOT.position.y})`,
+        `Heading: ${ROBOT.heading}°`,
+        `Battery: ${ROBOT.battery}%`
+      ].join("\n")
+    };
   }
 
-  return null;
-}
+  /* --------------------------------------------------
+     DENY
+  -------------------------------------------------- */
 
-// ============================================================
-// AI CAPABILITY REGISTRY
-// ============================================================
+  if (command === "DENY") {
+    let selected = null;
 
-const AI_CAPABILITIES = {
-  reasoning: {
-    enabled: true,
+    for (
+      const authorization of
+      pendingAuthorizations.values()
+    ) {
+      if (
+        authorization.sender ===
+        sender
+      ) {
+        if (
+          !selected ||
+          authorization.createdAt >
+            selected.createdAt
+        ) {
+          selected =
+            authorization;
+        }
+      }
+    }
 
-    provider: "openai",
+    if (!selected) {
+      return {
+        handled: true,
+        response:
+          "⚠️ No pending authorization request was found."
+      };
+    }
 
-    model: "gpt-4o-mini",
-  },
+    clearAuthorization(
+      selected.authorizationId
+    );
 
-  image: {
-    enabled: false,
-  },
+    await recordAuditEvent(
+      "AUTHORIZATION_DENIED",
+      {
+        sender,
+        command:
+          selected.command,
+        authorizationId:
+          selected.authorizationId
+      }
+    );
 
-  speech: {
-    enabled: false,
-  },
-
-  coding: {
-    enabled: false,
-  },
-
-  research: {
-    enabled: false,
-  },
-
-  robotics: {
-    enabled: true,
-
-    mode: "simulation",
-  },
-};
-
-// ============================================================
-// TASK CLASSIFICATION
-// ============================================================
-
-function classifyTask(text) {
-  const robotCommand =
-    parseRobotCommand(text);
-
-  if (robotCommand) {
     return {
-      task: "robotics",
+      handled: true,
+      response:
+        "🛡️ Robot action denied. No command was executed."
+    };
+}
+  /* --------------------------------------------------
+     EMERGENCY STOP
+  -------------------------------------------------- */
 
-      command:
-        robotCommand,
+  if (command === "STOP") {
+    ROBOT.emergencyStop = true;
+
+    ROBOT.status =
+      "STOPPED";
+
+    ROBOT.charging = false;
+
+    for (
+      const authorizationId of
+      pendingAuthorizations.keys()
+    ) {
+      clearAuthorization(
+        authorizationId
+      );
+    }
+
+    controllerGrants.clear();
+
+    const auditId =
+      await recordAuditEvent(
+        "EMERGENCY_STOP_ACTIVATED",
+        {
+          sender,
+          reason:
+            "Administrator emergency stop."
+        }
+      );
+
+    return {
+      handled: true,
+      response: [
+        "🛑 EMERGENCY STOP ACTIVE",
+        "",
+        "All pending robot authorizations were cancelled.",
+        "All controller grants were invalidated.",
+        "Robot execution is blocked.",
+        "",
+        `Audit ID: ${auditId}`,
+        "",
+        "Reply RESUME when it is safe to continue."
+      ].join("\n")
+    };
+  }
+
+  /* --------------------------------------------------
+     RESUME
+  -------------------------------------------------- */
+
+  if (command === "RESUME") {
+    ROBOT.emergencyStop = false;
+
+    if (
+      ROBOT.status ===
+      "STOPPED"
+    ) {
+      ROBOT.status = "IDLE";
+    }
+
+    const auditId =
+      await recordAuditEvent(
+        "EMERGENCY_STOP_CLEARED",
+        {
+          sender
+        }
+      );
+
+    return {
+      handled: true,
+      response: [
+        "🟢 ROBOT SYSTEM RESUMED",
+        "",
+        "Emergency stop cleared.",
+        "No robot action has been authorized automatically.",
+        "",
+        `Audit ID: ${auditId}`
+      ].join("\n")
+    };
+  }
+
+  /* --------------------------------------------------
+     STATUS
+  -------------------------------------------------- */
+
+  if (command === "STATUS") {
+    await recordAuditEvent(
+      "SYSTEM_STATUS_REQUESTED",
+      {
+        sender
+      }
+    );
+
+    return {
+      handled: true,
+      response:
+        robotStatusText()
     };
   }
 
   return {
-    task: "reasoning",
-
-    command: null,
+    handled: false
   };
 }
 
-// ============================================================
-// POLICY EVALUATION
-// ============================================================
+/* ======================================================
+   TASK CLASSIFICATION
+====================================================== */
+
+function classifyTask(text) {
+  const normalized =
+    String(text || "")
+      .trim()
+      .toUpperCase();
+
+  const robotCommand =
+    parseRobotCommand(
+      normalized
+    );
+
+  if (robotCommand) {
+    return {
+      category: "robotics",
+      command:
+        robotCommand.type,
+      robotCommand
+    };
+  }
+
+  if (
+    normalized.includes("ROBOT") ||
+    normalized.includes("CHARGING STATION")
+  ) {
+    return {
+      category: "robotics",
+      command:
+        "UNKNOWN_ROBOT_COMMAND"
+    };
+  }
+
+  return {
+    category: "conversation",
+    command: "CHAT"
+  };
+}
+
+/* ======================================================
+   POLICY
+====================================================== */
 
 function evaluatePolicy(
-  sender,
   task
 ) {
   if (
-    SYSTEM_STATE.emergencyStop
+    task.category ===
+    "robotics"
   ) {
-    return {
-      allowed: false,
-
-      reason:
-        "Emergency Stop is active.",
-    };
-  }
-
-  if (
-    !AI_CAPABILITIES[task]
-  ) {
-    return {
-      allowed: false,
-
-      reason:
-        `Capability "${task}" does not exist.`,
-    };
-  }
-
-  if (
-    !AI_CAPABILITIES[task]
-      .enabled
-  ) {
-    return {
-      allowed: false,
-
-      reason:
-        `Capability "${task}" is disabled.`,
-    };
-  }
-
-  if (
-    task === "robotics"
-  ) {
-    if (!isAdmin(sender)) {
+    if (
+      task.command ===
+      "STATUS"
+    ) {
       return {
-        allowed: false,
-
-        reason:
-          "Robot actions require an authorized administrator.",
+        allowed: true,
+        requiresAuthorization: false
       };
     }
 
     return {
       allowed: true,
-
       requiresAuthorization:
-        POLICY
-          .requireAuthorizationForSensitiveActions,
+        ROBOT_SAFETY.authorizationRequired
     };
   }
 
   return {
     allowed: true,
-
-    requiresAuthorization: false,
+    requiresAuthorization: false
   };
-}
-
-// ============================================================
-// AI ROUTER
-// ============================================================
-
-function routeAI(task) {
-  const capability =
-    AI_CAPABILITIES[task];
-
-  if (
-    !capability ||
-    !capability.enabled
-  ) {
-    throw new Error(
-      `AI capability unavailable: ${task}`
-    );
-  }
-
-  return {
-    provider:
-      capability.provider,
-
-    model:
-      capability.model,
-  };
-}
-
-// ============================================================
-// OPENAI REASONING
-// ============================================================
-
-async function askOpenAI(text) {
-  if (!openai) {
-    throw new Error(
-      "OPENAI_API_KEY is not configured."
-    );
-  }
-
-  const response =
-    await openai.chat.completions.create(
-      {
-        model:
-          AI_CAPABILITIES
-            .reasoning
-            .model,
-
-        messages: [
-          {
-            role: "system",
-
-            content:
-              "You are the reasoning component of The Silent Strategist AI. " +
-              "Follow the system policy and human-authority boundaries. " +
-              "Give useful, clear and responsible answers. " +
-              "Do not claim authority over the human operator. " +
-              "AI can recommend; human authority decides. " +
-              "Robotics commands are handled by the dedicated robotics layer.",
-          },
-
-          {
-            role: "user",
-
-            content: text,
-          },
-        ],
       }
-    );
+/* ======================================================
+   AI ROUTING
+====================================================== */
 
-  return (
-    response
-      .choices?.[0]
-      ?.message?.content ||
-    ""
-  );
-}
-
-// ============================================================
-// PROVIDER DISPATCH
-// ============================================================
-
-async function dispatchToProvider(
-  route,
-  text
+async function askOpenAI(
+  sender,
+  message
 ) {
-  if (
-    route.provider ===
-    "openai"
-  ) {
-    return await askOpenAI(
-      text
-    );
+  if (!openai) {
+    return [
+      "The Silent Strategist AI is online,",
+      "but the OpenAI API key is not configured."
+    ].join(" ");
   }
 
-  throw new Error(
-    `Unsupported provider: ${route.provider}`
-  );
+  try {
+    const completion =
+      await openai.chat.completions.create(
+        {
+          model:
+            process.env.OPENAI_MODEL ||
+            "gpt-4o-mini",
+
+          messages: [
+            {
+              role: "system",
+              content: `
+You are The Silent Strategist AI.
+
+You operate under a strict safety-first architecture.
+
+Human authority is required before physical robotics actions.
+
+Never claim that a physical action happened unless
+the robot controller actually reported successful execution.
+
+Current robot mode:
+${ROBOT.mode}
+
+Current robot status:
+${ROBOT.status}
+
+Current battery:
+${ROBOT.battery}%
+
+Keep responses clear, disciplined and useful.
+`
+            },
+
+            {
+              role: "user",
+              content:
+                message
+            }
+          ],
+
+          temperature: 0.4,
+
+          max_tokens: 500
+        }
+      );
+
+    return (
+      completion.choices?.[0]?.message?.content ||
+      "I received your message."
+    );
+  } catch (error) {
+    console.error(
+      "[OPENAI] Error:",
+      error.message
+    );
+
+    return [
+      "⚠️ AI service temporarily unavailable.",
+      "The core safety and robot-control systems remain protected."
+    ].join("\n");
+  }
 }
-// ============================================================
-// AI RESPONSE VERIFICATION
-// ============================================================
+
+/* ======================================================
+   AI RESPONSE VERIFICATION
+====================================================== */
 
 function verifyAIResponse(
   response
 ) {
-  if (
-    !response ||
-    typeof response !==
-      "string"
-  ) {
-    return {
-      valid: false,
-
-      reason:
-        "AI returned an empty or invalid response.",
-    };
+  if (!response) {
+    return "No response generated.";
   }
 
-  if (
-    response.length >
-    10000
-  ) {
-    return {
-      valid: false,
-
-      reason:
-        "AI response exceeded the maximum allowed length.",
-    };
-  }
-
-  return {
-    valid: true,
-  };
+  return String(response)
+    .trim()
+    .slice(0, 4000);
 }
 
-// ============================================================
-// MAIN MESSAGE PROCESSOR
-// ============================================================
+/* ======================================================
+   PROCESS MESSAGE
+====================================================== */
 
 async function processMessage(
   sender,
-  text
+  message
 ) {
-  const normalizedSender =
-    normalizeWhatsAppNumber(
-      sender
-    );
+  const text =
+    String(message || "").trim();
 
-  const classification =
-    classifyTask(text);
+  if (!text) {
+    return "Please send a message.";
+  }
 
-  const task =
-    classification.task;
-
-  const command =
-    classification.command;
-
-  recordAuditEvent(
-    "TASK_CLASSIFIED",
-    {
-      sender:
-        normalizedSender,
-
-      text,
-
-      task,
-
-      command,
-    }
-  );
+  const normalized =
+    text.toUpperCase();
 
   if (
-    String(text)
-      .trim()
-      .toUpperCase() ===
-    "ROBOT HELP"
+    normalized ===
+      "ROBOT HELP" ||
+    normalized ===
+      "ROBOT COMMANDS"
   ) {
     return robotHelp();
   }
 
-  const policyResult =
-    evaluatePolicy(
-      sender,
-      task
-    );
+  const task =
+    classifyTask(text);
 
-  recordAuditEvent(
-    "POLICY_EVALUATED",
+  await recordAuditEvent(
+    "TASK_CLASSIFIED",
     {
-      sender:
-        normalizedSender,
-
-      task,
-
-      allowed:
-        policyResult.allowed,
-
-      requiresAuthorization:
-        policyResult
-          .requiresAuthorization ||
-        false,
-
-      reason:
-        policyResult.reason ||
-        null,
+      sender,
+      command:
+        task.command,
+      category:
+        task.category,
+      message:
+        text
     }
   );
 
-  if (
-    !policyResult.allowed
-  ) {
-    return (
-      "⛔ ACTION BLOCKED\n\n" +
-      `Reason: ${policyResult.reason}`
-    );
+  const policy =
+    evaluatePolicy(task);
+
+  await recordAuditEvent(
+    "POLICY_EVALUATED",
+    {
+      sender,
+      command:
+        task.command,
+      allowed:
+        policy.allowed,
+      requiresAuthorization:
+        policy.requiresAuthorization
+    }
+  );
+
+  if (!policy.allowed) {
+    return "⛔ Request blocked by the safety policy.";
   }
 
-  if (
-    task === "robotics" &&
-    command?.type === "STATUS"
-  ) {
-    recordAuditEvent(
-      "ROBOT_STATUS_REQUESTED",
-      {
-        sender:
-          normalizedSender,
-      }
-    );
-
-    return getRobotStatusText();
-  }
+  /* --------------------------------------------------
+     ROBOTICS
+  -------------------------------------------------- */
 
   if (
-    task === "robotics" &&
-    policyResult
-      .requiresAuthorization
+    task.category ===
+    "robotics"
   ) {
-    const safety =
+    if (
+      task.command ===
+      "UNKNOWN_ROBOT_COMMAND"
+    ) {
+      return [
+        "⚠️ Unknown robot command.",
+        "",
+        robotHelp()
+      ].join("\n");
+    }
+
+    if (
+      task.command ===
+      "STATUS"
+    ) {
+      return robotStatusText();
+    }
+
+    const command =
+      task.robotCommand;
+
+    const validation =
       validateRobotCommand(
         command
       );
 
-    if (!safety.allowed) {
-      recordAuditEvent(
-        "ROBOT_COMMAND_REJECTED",
-        {
-          sender:
-            normalizedSender,
-
-          command,
-
-          reason:
-            safety.reason,
-        }
-      );
-
-      return (
-        "⛔ ROBOT COMMAND REJECTED\n\n" +
-        `Reason: ${safety.reason}`
-      );
-    }
-
-    const authorization =
-      createAuthorizationRequest(
-        sender,
-
-        task,
-
-        text,
-
-        command
-      );
-
-    let description =
-      "Robot action";
-
-    if (
-      command.type ===
-      "MOVE"
-    ) {
-      description =
-        `Move ${command.direction} ` +
-        `${command.distance} units`;
+    if (!validation.allowed) {
+      return [
+        "⛔ ROBOT COMMAND BLOCKED",
+        "",
+        validation.reason
+      ].join("\n");
     }
 
     if (
-      command.type ===
-      "TURN"
+      policy.requiresAuthorization
     ) {
-      description =
-        `Turn ${command.direction} ` +
-        `${command.degrees} degrees`;
-    }
+      if (!isAdmin(sender)) {
+        await recordAuditEvent(
+          "AUTHORIZATION_REJECTED",
+          {
+            sender,
+            command:
+              command.raw,
+            reason:
+              "Sender is not administrator."
+          }
+        );
 
-    if (
-      command.type ===
-      "GO_CHARGING"
-    ) {
-      description =
-        "Go to charging station";
-    }
-
-    return (
-      "🤖 ROBOT ACTION PROPOSED\n\n" +
-
-      `Task: ${description}\n` +
-
-      "Mode: SIMULATION\n" +
-
-      `Current Position: (${
-        ROBOT_STATE.position.x
-      }, ${
-        ROBOT_STATE.position.y
-      })\n` +
-
-      `Battery: ${
-        ROBOT_STATE.battery
-      }%\n\n` +
-
-      "Human Authorization: REQUIRED\n\n" +
-
-      "Reply:\n" +
-
-      "APPROVE — execute\n" +
-
-      "DENY — cancel\n\n" +
-
-      `Authorization ID: ${
-        authorization.auditId
-      }\n` +
-
-      "This authorization expires in 5 minutes."
-    );
-  }
-
-  const route =
-    routeAI(task);
-
-  recordAuditEvent(
-    "AI_ROUTE_SELECTED",
-    {
-      sender:
-        normalizedSender,
-
-      task,
-
-      provider:
-        route.provider,
-
-      model:
-        route.model,
-    }
-  );
-
-  try {
-    const response =
-      await dispatchToProvider(
-        route,
-        text
-      );
-
-    const verification =
-      verifyAIResponse(
-        response
-      );
-
-    if (
-      !verification.valid
-    ) {
-      recordAuditEvent(
-        "AI_RESPONSE_REJECTED",
-        {
-          sender:
-            normalizedSender,
-
-          task,
-
-          reason:
-            verification.reason,
-        }
-      );
-
-      return (
-        "⚠️ AI response failed verification.\n\n" +
-        `Reason: ${verification.reason}`
-      );
-    }
-
-    const audit =
-      recordAuditEvent(
-        "AI_RESPONSE_APPROVED",
-        {
-          sender:
-            normalizedSender,
-
-          task,
-
-          provider:
-            route.provider,
-
-          model:
-            route.model,
-        }
-      );
-
-    console.log(
-      `[AI] Response approved: ${audit.id}`
-    );
-
-    return response;
-  } catch (error) {
-    recordAuditEvent(
-      "AI_PROVIDER_ERROR",
-      {
-        sender:
-          normalizedSender,
-
-        task,
-
-        provider:
-          route.provider,
-
-        error:
-          error.message,
+        return [
+          "⛔ ROBOT CONTROL DENIED",
+          "",
+          "Only the authorized administrator can approve robot actions."
+        ].join("\n");
       }
+
+      const authorizationId =
+        createAuthorizationRequest(
+          sender,
+          command.raw
+        );
+
+      await recordAuditEvent(
+        "AUTHORIZATION_PROPOSED",
+        {
+          sender,
+          command:
+            command.raw,
+          authorizationId
+        }
+      );
+
+      return [
+        "🤖 ROBOT ACTION PROPOSED",
+        "",
+        `Task: ${command.raw}`,
+        `Mode: ${ROBOT.mode.toUpperCase()}`,
+        `Current Position: (${ROBOT.position.x}, ${ROBOT.position.y})`,
+        `Battery: ${ROBOT.battery}%`,
+        "",
+        "Human Authorization: REQUIRED",
+        "",
+        "Reply:",
+        "APPROVE — execute",
+        "DENY — cancel",
+        "",
+        `Authorization ID: ${authorizationId}`,
+        "This authorization expires in 5 minutes."
+      ].join("\n");
+    }
+
+    return "Robot command received.";
+          }
+  /* --------------------------------------------------
+     GENERAL AI
+  -------------------------------------------------- */
+
+  const response =
+    await askOpenAI(
+      sender,
+      text
     );
 
-    throw error;
-  }
+  return verifyAIResponse(
+    response
+  );
 }
 
-// ============================================================
-// WHATSAPP MESSAGE SENDER
-// ============================================================
+/* ======================================================
+   WHATSAPP SEND
+====================================================== */
 
 async function sendWhatsAppMessage(
-  to,
-  text
+  recipient,
+  message
 ) {
   if (
     !WHATSAPP_ACCESS_TOKEN ||
@@ -2651,81 +2238,74 @@ async function sendWhatsAppMessage(
   }
 
   const url =
-    `https://graph.facebook.com/v23.0/` +
-    `${WHATSAPP_PHONE_NUMBER_ID}` +
-    `/messages`;
+    `https://graph.facebook.com/v23.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
   const response =
-    await fetch(
-      url,
-      {
-        method: "POST",
+    await fetch(url, {
+      method: "POST",
 
-        headers: {
-          Authorization:
-            `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      headers: {
+        "Authorization":
+          `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
 
-          "Content-Type":
-            "application/json",
-        },
+        "Content-Type":
+          "application/json"
+      },
 
-        body: JSON.stringify(
-          {
-            messaging_product:
-              "whatsapp",
+      body: JSON.stringify({
+        messaging_product:
+          "whatsapp",
 
-            to,
+        to:
+          recipient,
 
-            type: "text",
+        type:
+          "text",
 
-            text: {
-              body: text,
-            },
-          }
-        ),
-      }
-    );
+        text: {
+          body:
+            String(message)
+              .slice(0, 4096)
+        }
+      })
+    });
 
-  const responseText =
-    await response.text();
-
-  console.log(
-    "[WHATSAPP API RESPONSE]",
-    response.status,
-    responseText
-  );
+  const data =
+    await response.json()
+      .catch(() => ({}));
 
   if (!response.ok) {
     throw new Error(
-      `WhatsApp API error ${response.status}: ${responseText}`
+      `WhatsApp API ${response.status}: ${JSON.stringify(data)}`
     );
   }
 
-  return responseText;
+  return data;
 }
 
-// ============================================================
-// HTTP BODY READER
-// ============================================================
+/* ======================================================
+   HTTP HELPERS
+====================================================== */
 
-function readRequestBody(req) {
+function readRequestBody(
+  req
+) {
   return new Promise(
     (resolve, reject) => {
       let body = "";
 
       req.on(
         "data",
-        (chunk) => {
-          body +=
-            chunk.toString();
+        chunk => {
+          body += chunk;
 
           if (
             body.length >
-            100000
+            2 * 1024 * 1024
           ) {
             reject(
               new Error(
-                "Request body is too large."
+                "Request body too large."
               )
             );
 
@@ -2747,145 +2327,812 @@ function readRequestBody(req) {
   );
 }
 
-// ============================================================
-// JSON RESPONSE HELPER
-// ============================================================
-
 function sendJSON(
   res,
   statusCode,
-  payload
+  data
+) {
+  const body =
+    JSON.stringify(data);
+
+  res.writeHead(
+    statusCode,
+    {
+      "Content-Type":
+        "application/json; charset=utf-8",
+
+      "Cache-Control":
+        "no-store"
+    }
+  );
+
+  res.end(body);
+}
+
+function sendText(
+  res,
+  statusCode,
+  text
 ) {
   res.writeHead(
     statusCode,
     {
       "Content-Type":
-        "application/json",
-
-      "Cache-Control":
-        "no-store",
+        "text/plain; charset=utf-8"
     }
   );
 
-  res.end(
-    JSON.stringify(
-      payload,
-      null,
-      2
+  res.end(text);
+}
+
+/* ======================================================
+   WEBHOOK HANDLING
+====================================================== */
+
+async function handleIncomingWhatsApp(
+  payload
+) {
+  if (
+    !payload ||
+    !Array.isArray(
+      payload.entry
     )
-  );
+  ) {
+    return;
+  }
+
+  for (
+    const entry of payload.entry
+  ) {
+    const changes =
+      Array.isArray(entry.changes)
+        ? entry.changes
+        : [];
+
+    for (
+      const change of changes
+    ) {
+      const value =
+        change.value || {};
+
+      const messages =
+        Array.isArray(
+          value.messages
+        )
+          ? value.messages
+          : [];
+
+      for (
+        const message of messages
+      ) {
+        const sender =
+          message.from;
+
+        const text =
+          message.text?.body;
+
+        if (
+          !sender ||
+          !text
+        ) {
+          continue;
+        }
+
+        console.log(
+          `[WHATSAPP] Message from ${sender}: ${text}`
+        );
+
+        await recordAuditEvent(
+          "WHATSAPP_MESSAGE_RECEIVED",
+          {
+            sender,
+            message: text
+          }
+        );
+
+        let response;
+
+        if (
+          isControlCommand(text)
+        ) {
+          const control =
+            await handleControlCommand(
+              sender,
+              text
+            );
+
+          if (control.handled) {
+            response =
+              control.response;
+          }
+        }
+
+        if (!response) {
+          response =
+            await processMessage(
+              sender,
+              text
+            );
+        }
+
+        await sendWhatsAppMessage(
+          sender,
+          response
+        );
+
+        await recordAuditEvent(
+          "WHATSAPP_RESPONSE_SENT",
+          {
+            sender,
+            response
+          }
+        );
+      }
     }
-// ============================================================
-// HTTP SERVER
-// ============================================================
+  }
+}
+
+/* ======================================================
+   HTTP SERVER
+====================================================== */
 
 const server =
   http.createServer(
     async (req, res) => {
+      try {
+        const path =
+          getPath(req);
 
-      // ======================================================
-      // HEALTH CHECK
-      // ======================================================
+        /* ----------------------------------------------
+           ROOT
+        ---------------------------------------------- */
 
-      if (
-        req.method === "GET" &&
-        req.url === "/"
-      ) {
-        res.writeHead(
-          200,
-          {
-            "Content-Type":
-              "text/plain",
-          }
-        );
+        if (
+          req.method === "GET" &&
+          path === "/"
+        ) {
+          return sendJSON(
+            res,
+            200,
+            {
+              name:
+                "The Silent Strategist AI",
 
-        res.end(
-          "THE SILENT STRATEGIST AI\n\n" +
+              version:
+                APP_VERSION,
 
-          "Server: ONLINE\n" +
+              status:
+                "online",
 
-          `Policy Engine: ACTIVE\n` +
+              robotMode:
+                ROBOT.mode
+            }
+          );
+              }
+        /* ----------------------------------------------
+           HEALTH
+        ---------------------------------------------- */
 
-          `Human Authority: ${
-            POLICY.humanAuthority
-          }\n` +
+        if (
+          req.method === "GET" &&
+          path === "/health"
+        ) {
+          return sendJSON(
+            res,
+            200,
+            {
+              status:
+                "ok",
 
-          "Human Authorization: ACTIVE\n" +
+              version:
+                APP_VERSION,
 
-          "AI Router: ACTIVE\n" +
+              database:
+                Boolean(pool),
 
-          "Verification: ACTIVE\n" +
-
-          "Audit Logging: ACTIVE\n" +
-
-          "Persistent Storage: POSTGRESQL\n" +
-
-          `Emergency Stop: ${
-            SYSTEM_STATE.emergencyStop
-              ? "ON"
-              : "OFF"
-          }\n` +
-
-          "Robot Controller: ACTIVE\n" +
-
-          `Robot Mode: ${
-            POLICY.capabilities
-              .robotics.mode
-              .toUpperCase()
-          }\n` +
-
-          `Secure Controller: ${
-            ROBOT_CONTROLLER.enabled
-              ? "ACTIVE"
-              : "NOT CONFIGURED"
-          }\n` +
-
-          `Robot Status: ${
-            ROBOT_STATE.status
-          }\n` +
-
-          `Robot Battery: ${
-            ROBOT_STATE.battery
-          }%\n` +
-
-          `Robot Position: (${
-            ROBOT_STATE.position.x
-          }, ${
-            ROBOT_STATE.position.y
-          })\n`
-        );
-
-        return;
-      }
-
-      // ======================================================
-      // CAPABILITIES
-      // ======================================================
-
-      if (
-        req.method === "GET" &&
-        req.url ===
-          "/capabilities"
-      ) {
-        sendJSON(
-          res,
-          200,
-          {
-            policy:
-              POLICY,
-
-            capabilities:
-              AI_CAPABILITIES,
-
-            robotics: {
-              mode:
-                "simulation",
+              robot:
+                getRobotStatus(),
 
               controller:
-                getRobotControllerHealth(),
+                getRobotControllerHealth()
+            }
+          );
+        }
+
+        /* ----------------------------------------------
+           CAPABILITIES
+        ---------------------------------------------- */
+
+        if (
+          req.method === "GET" &&
+          path === "/capabilities"
+        ) {
+          return sendJSON(
+            res,
+            200,
+            {
+              policy:
+                POLICY,
+
+              capabilities:
+                AI_CAPABILITIES,
+
+              robotics: {
+                mode:
+                  "simulation",
+
+                controller:
+                  getRobotControllerHealth(),
+
+                safety:
+                  ROBOT_SAFETY,
+
+                robot:
+                  getRobotStatus()
+              }
+            }
+          );
+        }
+
+        /* ----------------------------------------------
+           ROBOT STATUS
+        ---------------------------------------------- */
+
+        if (
+          req.method === "GET" &&
+          path === "/robot"
+        ) {
+          return sendJSON(
+            res,
+            200,
+            {
+              robot:
+                getRobotStatus(),
 
               safety:
                 ROBOT_SAFETY,
 
+              controller:
+                getRobotControllerHealth()
+            }
+          );
+        }
+
+        /* ----------------------------------------------
+           ROBOT CONTROLLER STATUS
+        ---------------------------------------------- */
+
+        if (
+          req.method === "GET" &&
+          path ===
+            "/robot/controller/status"
+        ) {
+          if (
+            !authenticateRobotController(
+              req
+            )
+          ) {
+            await recordAuditEvent(
+              "ROBOT_CONTROLLER_AUTH_FAILED",
+              {
+                endpoint:
+                  path,
+                method:
+                  req.method
+              }
+            );
+
+            return sendJSON(
+              res,
+              401,
+              {
+                error:
+                  "Unauthorized."
+              }
+            );
+          }
+
+          return sendJSON(
+            res,
+            200,
+            {
+              controller:
+                getRobotControllerHealth(),
+
               robot:
-                ROBOT
+                getRobotStatus()
+            }
+          );
+        }
+
+        /* ----------------------------------------------
+           ROBOT CONTROLLER HEARTBEAT
+        ---------------------------------------------- */
+
+        if (
+          req.method === "POST" &&
+          path ===
+            "/robot/controller/heartbeat"
+        ) {
+          if (
+            !authenticateRobotController(
+              req
+            )
+          ) {
+            await recordAuditEvent(
+              "ROBOT_CONTROLLER_AUTH_FAILED",
+              {
+                endpoint:
+                  path,
+                method:
+                  req.method
+              }
+            );
+
+            return sendJSON(
+              res,
+              401,
+              {
+                error:
+                  "Unauthorized."
+              }
+            );
+          }
+
+          const health =
+            registerRobotHeartbeat();
+
+          await recordAuditEvent(
+            "ROBOT_CONTROLLER_HEARTBEAT",
+            {
+              controller:
+                health
+            }
+          );
+
+          return sendJSON(
+            res,
+            200,
+            {
+              ok: true,
+
+              controller:
+                health
+            }
+          );
+        }
+
+        /* ----------------------------------------------
+           ROBOT CONTROLLER COMMAND
+        ---------------------------------------------- */
+
+        if (
+          req.method === "POST" &&
+          path ===
+            "/robot/controller/command"
+        ) {
+          if (
+            !authenticateRobotController(
+              req
+            )
+          ) {
+            await recordAuditEvent(
+              "ROBOT_CONTROLLER_AUTH_FAILED",
+              {
+                endpoint:
+                  path,
+                method:
+                  req.method
+              }
+            );
+
+            return sendJSON(
+              res,
+              401,
+              {
+                error:
+                  "Unauthorized."
+              }
+            );
+          }
+
+          const rawBody =
+            await readRequestBody(
+              req
+            );
+
+          let body;
+
+          try {
+            body =
+              rawBody
+                ? JSON.parse(rawBody)
+                : {};
+          } catch {
+            return sendJSON(
+              res,
+              400,
+              {
+                error:
+                  "Invalid JSON."
+              }
+            );
+          }
+
+          /*
+          The controller does NOT accept arbitrary
+          movement commands.
+
+          It must receive a server-issued,
+          short-lived, one-time authorization grant.
+
+          This prevents possession of the controller
+          token alone from becoming robot authority.
+          */
+
+          const grantId =
+            body.grantId;
+
+          if (!grantId) {
+            return sendJSON(
+              res,
+              400,
+              {
+                error:
+                  "grantId is required."
+              }
+            );
+          }
+
+          const grant =
+            controllerGrants.get(
+              grantId
+            );
+
+          if (
+            body.command &&
+            grant &&
+            String(body.command)
+              .trim()
+              .toUpperCase() !==
+              String(grant.command)
+                .trim()
+                .toUpperCase()
+          ) {
+            await recordAuditEvent(
+              "ROBOT_CONTROLLER_COMMAND_REJECTED",
+              {
+                grantId,
+                reason:
+                  "Command does not match authorization grant."
+              }
+            );
+
+            return sendJSON(
+              res,
+              403,
+              {
+                error:
+                  "Command does not match authorization grant."
+              }
+            );
+          }
+
+          const result =
+            await consumeControllerGrantAndExecute(
+              grantId
+            );
+
+          if (!result.success) {
+            return sendJSON(
+              res,
+              403,
+              {
+                ok: false,
+
+                error:
+                  result.reason
+              }
+            );
+          }
+
+          return sendJSON(
+            res,
+            200,
+            {
+              ok: true,
+
+              result,
+
+              robot:
+                getRobotStatus()
+            }
+          );
+                }
+                  /* ----------------------------------------------
+           META WEBHOOK VERIFICATION
+        ---------------------------------------------- */
+
+        if (
+          req.method === "GET" &&
+          path === "/webhook"
+        ) {
+          const url =
+            new URL(
+              req.url,
+              `http://${req.headers.host || "localhost"}`
+            );
+
+          const mode =
+            url.searchParams.get(
+              "hub.mode"
+            );
+
+          const token =
+            url.searchParams.get(
+              "hub.verify_token"
+            );
+
+          const challenge =
+            url.searchParams.get(
+              "hub.challenge"
+            );
+
+          if (
+            mode === "subscribe" &&
+            safeTokenCompare(
+              token,
+              WEBHOOK_VERIFY_TOKEN
+            )
+          ) {
+            await recordAuditEvent(
+              "WEBHOOK_VERIFIED",
+              {}
+            );
+
+            return sendText(
+              res,
+              200,
+              challenge || ""
+            );
+          }
+
+          await recordAuditEvent(
+            "WEBHOOK_VERIFICATION_FAILED",
+            {}
+          );
+
+          return sendText(
+            res,
+            403,
+            "Forbidden"
+          );
+        }
+
+        /* ----------------------------------------------
+           META WEBHOOK PAYLOAD
+        ---------------------------------------------- */
+
+        if (
+          req.method === "POST" &&
+          path === "/webhook"
+        ) {
+          console.log(
+            "[WEBHOOK] Incoming payload received."
+          );
+
+          const rawBody =
+            await readRequestBody(
+              req
+            );
+
+          let payload;
+
+          try {
+            payload =
+              JSON.parse(rawBody);
+          } catch {
+            await recordAuditEvent(
+              "WEBHOOK_INVALID_JSON",
+              {}
+            );
+
+            return sendJSON(
+              res,
+              400,
+              {
+                error:
+                  "Invalid JSON."
+              }
+            );
+          }
+
+          /*
+          Respond quickly enough for Meta,
+          then process the payload.
+          */
+
+          sendJSON(
+            res,
+            200,
+            {
+              received: true
+            }
+          );
+
+          try {
+            await handleIncomingWhatsApp(
+              payload
+            );
+          } catch (error) {
+            console.error(
+              "[WEBHOOK] Processing error:",
+              error
+            );
+
+            await recordAuditEvent(
+              "WEBHOOK_PROCESSING_ERROR",
+              {
+                error:
+                  error.message
+              }
+            );
+          }
+
+          return;
+        }
+
+        /* ----------------------------------------------
+           404
+        ---------------------------------------------- */
+
+        return sendJSON(
+          res,
+          404,
+          {
+            error:
+              "Not found."
+          }
+        );
+      } catch (error) {
+        console.error(
+          "[SERVER] Request error:",
+          error
+        );
+
+        if (!res.headersSent) {
+          sendJSON(
+            res,
+            500,
+            {
+              error:
+                "Internal server error."
+            }
+          );
+        }
+      }
+    }
+  );
+/* ======================================================
+   STARTUP
+====================================================== */
+
+async function startServer() {
+  try {
+    await initializeDatabase();
+
+    server.listen(
+      PORT,
+      () => {
+        console.log(
+          "========================================"
+        );
+
+        console.log(
+          "THE SILENT STRATEGIST AI"
+        );
+
+        console.log(
+          "========================================"
+        );
+
+        console.log(
+          `Server running on port ${PORT}`
+        );
+
+        console.log(
+          `Application Version: ${APP_VERSION}`
+        );
+
+        console.log(
+          `Policy Engine: ACTIVE`
+        );
+
+        console.log(
+          `Human Authority: ${POLICY.humanAuthorityRequired}`
+        );
+
+        console.log(
+          `Human Authorization: ACTIVE`
+        );
+
+        console.log(
+          `Audit Logging: ${pool ? "ACTIVE" : "DISABLED"}`
+        );
+
+        console.log(
+          `Persistent Storage: ${
+            pool
+              ? "POSTGRESQL"
+              : "NONE"
+          }`
+        );
+
+        console.log(
+          `Emergency Stop: ${
+            ROBOT.emergencyStop
+              ? "ON"
+              : "OFF"
+          }`
+        );
+
+        console.log(
+          `Robot Controller: ${
+            ROBOT_CONTROLLER.enabled
+              ? "ACTIVE"
+              : "NOT CONFIGURED"
+          }`
+        );
+
+        console.log(
+          `Robot Mode: ${ROBOT.mode}`
+        );
+
+        console.log(
+          `Robot ID: ${ROBOT.id}`
+        );
+
+        console.log(
+          "========================================"
+        );
+      }
+    );
+  } catch (error) {
+    console.error(
+      "[STARTUP] Fatal startup error:",
+      error
+    );
+
+    process.exit(1);
+  }
+}
+
+/* ======================================================
+   PROCESS SAFETY
+====================================================== */
+
+process.on(
+  "unhandledRejection",
+  error => {
+    console.error(
+      "[PROCESS] Unhandled rejection:",
+      error
+    );
+  }
+);
+
+process.on(
+  "uncaughtException",
+  error => {
+    console.error(
+      "[PROCESS] Uncaught exception:",
+      error
+    );
+  }
+);
+
+/* ======================================================
+   START
+====================================================== */
+
+startServer();
