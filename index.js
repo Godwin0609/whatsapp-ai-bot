@@ -1,5 +1,6 @@
 const http = require("http");
 const OpenAI = require("openai");
+const { Pool } = require("pg");
 
 // ===============================
 // ENVIRONMENT VARIABLES
@@ -12,6 +13,33 @@ const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_PHONE_NUMBER = process.env.ADMIN_PHONE_NUMBER;
+const DATABASE_URL = process.env.DATABASE_URL;
+
+// ===============================
+// POSTGRESQL DATABASE
+// ===============================
+
+if (!DATABASE_URL) {
+  console.error("[DATABASE] DATABASE_URL is not configured.");
+  process.exit(1);
+}
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+
+  // Render PostgreSQL connections commonly require SSL.
+  ssl: {
+    rejectUnauthorized: false,
+  },
+
+  max: 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+});
+
+pool.on("error", (error) => {
+  console.error("[DATABASE] Unexpected PostgreSQL pool error:", error);
+});
 
 // ===============================
 // OPENAI CLIENT
@@ -78,8 +106,44 @@ const SYSTEM_STATE = {
 };
 
 // ===============================
+// DATABASE INITIALIZATION
+// ===============================
+
+async function initializeDatabase() {
+  console.log("[DATABASE] Connecting to PostgreSQL...");
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id TEXT PRIMARY KEY,
+      timestamp TIMESTAMPTZ NOT NULL,
+      type TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp
+    ON audit_events (timestamp DESC)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_audit_events_type
+    ON audit_events (type)
+  `);
+
+  console.log(
+    "[DATABASE] PostgreSQL connected and audit_events table is ready."
+  );
+}
+
+// ===============================
 // AUDIT LOG
 // ===============================
+
+// Small in-memory cache for the current running process.
+//
+// PostgreSQL is now the persistent source of truth.
+// This cache is NOT relied upon for permanent history.
 
 const auditLog = [];
 
@@ -93,6 +157,7 @@ function recordAuditEvent(type, data = {}) {
     ...data,
   };
 
+  // Keep a limited local cache for current-process use.
   auditLog.push(event);
 
   if (auditLog.length > MAX_AUDIT_LOG_SIZE) {
@@ -100,6 +165,36 @@ function recordAuditEvent(type, data = {}) {
   }
 
   console.log("[AUDIT]", JSON.stringify(event));
+
+  // Persist the audit event to PostgreSQL.
+  //
+  // This intentionally does not block the existing synchronous
+  // audit API used throughout the application.
+  pool
+    .query(
+      `
+        INSERT INTO audit_events (
+          id,
+          timestamp,
+          type,
+          data
+        )
+        VALUES ($1, $2, $3, $4::jsonb)
+        ON CONFLICT (id) DO NOTHING
+      `,
+      [
+        event.id,
+        event.timestamp,
+        event.type,
+        JSON.stringify(data),
+      ]
+    )
+    .catch((error) => {
+      console.error(
+        "[DATABASE] Failed to persist audit event:",
+        error.message
+      );
+    });
 
   return event;
 }
@@ -370,7 +465,7 @@ async function handleControlCommand(sender, text) {
         sender: normalizeWhatsAppNumber(sender),
       });
 
-      return "⛔ STOP command denied. Only the authorized administrator can control the system.";
+      return "⛔ STOP command denied. Only the authorized human administrator can control the system.";
     }
 
     SYSTEM_STATE.emergencyStop = true;
@@ -449,23 +544,19 @@ async function handleControlCommand(sender, text) {
 
     return (
       "🧠 SILENT STRATEGIST STATUS\n\n" +
-
       `System: ONLINE\n` +
       `Policy Engine: ACTIVE\n` +
       `AI Router: ACTIVE\n` +
       `Verification: ACTIVE\n` +
       `Audit Logging: ACTIVE\n` +
+      `Persistent Storage: PostgreSQL\n` +
       `Human Authorization: ACTIVE\n` +
       `Emergency Stop: ${SYSTEM_STATE.emergencyStop ? "ON" : "OFF"}\n` +
-
       `Robot Controller: ACTIVE\n` +
       `Robot Mode: ${POLICY.capabilities.robotics.mode.toUpperCase()}\n` +
-
       `Policy Version: ${POLICY.version}\n` +
-
       `Robot Battery: ${ROBOT_STATE.battery}%\n` +
       `Robot Status: ${ROBOT_STATE.status}\n` +
-
       `Pending Authorization: ${pending ? "YES" : "NO"}`
     );
   }
@@ -724,7 +815,6 @@ function calculateRobotRoute(start, destination) {
 // ===============================
 // ROBOT EXECUTION
 // ===============================
-
 async function executeRobotTask(sender, text, options = {}) {
   const normalizedSender = normalizeWhatsAppNumber(sender);
 
@@ -932,7 +1022,6 @@ async function processMessage(sender, text) {
       `Reason: ${policyResult.reason}`
     );
   }
-
   // ===============================
   // SENSITIVE ACTION
   // ===============================
@@ -954,29 +1043,17 @@ async function processMessage(sender, text) {
 
     return (
       "🤖 ACTION PROPOSED\n\n" +
-
       "Task: Go to Charging Station\n" +
-
       "Mode: Simulation\n" +
-
       `Current Position: (${ROBOT_STATE.position.x}, ${ROBOT_STATE.position.y})\n` +
-
       `Destination: (${CHARGING_STATION.x}, ${CHARGING_STATION.y})\n` +
-
       `Estimated Route: ${route.length} steps\n` +
-
       `Current Battery: ${ROBOT_STATE.battery}%\n\n` +
-
       "Authorization: REQUIRED\n\n" +
-
       "Reply:\n" +
-
       "APPROVE — execute the action\n" +
-
       "DENY — cancel the action\n\n" +
-
       `Authorization ID: ${authorization.auditId}\n` +
-
       "This request expires in 5 minutes."
     );
   }
@@ -1108,7 +1185,6 @@ const server = http.createServer(async (req, res) => {
       "The Silent Strategist AI running on port " +
       PORT +
       "\n\n" +
-
       "Policy Engine: ACTIVE\n" +
       "Task Classifier: ACTIVE\n" +
       "AI Capability Registry: ACTIVE\n" +
@@ -1116,6 +1192,7 @@ const server = http.createServer(async (req, res) => {
       "Provider Adapter: ACTIVE\n" +
       "Verification: ACTIVE\n" +
       "Audit Logging: ACTIVE\n" +
+      "Persistent Storage: POSTGRESQL\n" +
       "Human Authorization: ACTIVE\n" +
       "Emergency Stop: " +
       (SYSTEM_STATE.emergencyStop ? "ON" : "OFF") +
@@ -1124,15 +1201,12 @@ const server = http.createServer(async (req, res) => {
       "Robot Mode: " +
       POLICY.capabilities.robotics.mode.toUpperCase() +
       "\n\n" +
-
       "Policy Version: " +
       POLICY.version +
       "\n" +
-
       "Robot Status: " +
       ROBOT_STATE.status +
       "\n" +
-
       "Robot Battery: " +
       ROBOT_STATE.battery +
       "%\n"
@@ -1140,6 +1214,7 @@ const server = http.createServer(async (req, res) => {
 
     return;
   }
+
   // ===============================
   // CAPABILITIES ENDPOINT
   // ===============================
@@ -1165,7 +1240,6 @@ const server = http.createServer(async (req, res) => {
 
     return;
   }
-
   // ===============================
   // ROBOT STATUS ENDPOINT
   // ===============================
@@ -1253,7 +1327,10 @@ const server = http.createServer(async (req, res) => {
           "[WEBHOOK] Incoming payload received."
         );
 
-        if (payload.object !== "whatsapp_business_account") {
+        if (
+          payload.object !==
+          "whatsapp_business_account"
+        ) {
           res.writeHead(200);
           res.end("EVENT_RECEIVED");
           return;
@@ -1379,7 +1456,6 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-
         // ===============================
         // ACKNOWLEDGE META
         // ===============================
@@ -1415,7 +1491,8 @@ const server = http.createServer(async (req, res) => {
     });
 
     return;
-                      }
+  }
+
   // ===============================
   // 404
   // ===============================
@@ -1442,56 +1519,77 @@ server.on("error", (error) => {
 // START SERVER
 // ===============================
 
-server.listen(PORT, () => {
-  console.log(
-    "========================================"
-  );
+async function startServer() {
+  try {
+    // PostgreSQL must be available before
+    // the application is considered ready.
+    await initializeDatabase();
 
-  console.log(
-    "THE SILENT STRATEGIST AI"
-  );
+    server.listen(PORT, () => {
+      console.log(
+        "========================================"
+      );
 
-  console.log(
-    "========================================"
-  );
+      console.log(
+        "THE SILENT STRATEGIST AI"
+      );
 
-  console.log(
-    `Server running on port ${PORT}`
-  );
+      console.log(
+        "========================================"
+      );
 
-  console.log(
-    `Policy Engine: ACTIVE`
-  );
+      console.log(
+        `Server running on port ${PORT}`
+      );
 
-  console.log(
-    `Human Authority: ${POLICY.humanAuthority}`
-  );
+      console.log(
+        `Policy Engine: ACTIVE`
+      );
 
-  console.log(
-    `Human Authorization: ACTIVE`
-  );
+      console.log(
+        `Human Authority: ${POLICY.humanAuthority}`
+      );
 
-  console.log(
-    `Audit Logging: ACTIVE`
-  );
+      console.log(
+        `Human Authorization: ACTIVE`
+      );
 
-  console.log(
-    `Emergency Stop: ${
-      SYSTEM_STATE.emergencyStop
-        ? "ON"
-        : "OFF"
-    }`
-  );
+      console.log(
+        `Audit Logging: ACTIVE`
+      );
 
-  console.log(
-    `Robot Controller: ACTIVE`
-  );
+      console.log(
+        `Persistent Storage: POSTGRESQL`
+      );
 
-  console.log(
-    `Robot Mode: ${POLICY.capabilities.robotics.mode}`
-  );
+      console.log(
+        `Emergency Stop: ${
+          SYSTEM_STATE.emergencyStop
+            ? "ON"
+            : "OFF"
+        }`
+      );
 
-  console.log(
-    "========================================"
-  );
-});
+      console.log(
+        `Robot Controller: ACTIVE`
+      );
+
+      console.log(
+        `Robot Mode: ${POLICY.capabilities.robotics.mode}`
+      );
+
+      console.log(
+        "========================================"
+      );
+    });
+  } catch (error) {
+    console.error(
+      "[STARTUP ERROR] PostgreSQL initialization failed:",
+      error
+    );
+
+    process.exit(1);
+  }
+}
+
+startServer();
