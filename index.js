@@ -1,5 +1,12 @@
 "use strict";
 
+const {
+  embodimentInterface,
+  CAPABILITIES,
+  COMMAND_TYPES,
+  createVirtualBody
+} = require("./embodiment-interface");
+
 /*
 ========================================================
 THE SILENT STRATEGIST AI
