@@ -1258,6 +1258,208 @@ async function simulateCharging(
   };
     }
 /* ======================================================
+   VIRTUAL BODY A
+   EXISTING SIMULATED WHEELED ROBOT
+====================================================== */
+
+const VIRTUAL_BODY_A_ID =
+  "silent-strategist-robot-01";
+
+const virtualBodyA =
+  createVirtualBody({
+    id: VIRTUAL_BODY_A_ID,
+
+    name:
+      "Silent Strategist Virtual Wheeled Robot",
+
+    type:
+      "virtual-wheeled-robot",
+
+    capabilities: [
+      CAPABILITIES.OBSERVE,
+      CAPABILITIES.MOVE,
+      CAPABILITIES.STOP,
+      CAPABILITIES.TURN,
+      CAPABILITIES.REPORT_STATUS,
+      CAPABILITIES.CHARGE
+    ],
+
+    initialState: {
+      mode: "simulation",
+      status: ROBOT.status,
+      position: {
+        ...ROBOT.position
+      },
+      heading: ROBOT.heading,
+      battery: ROBOT.battery,
+      charging: ROBOT.charging
+    },
+
+    safetyCheck(body, command) {
+      let legacyCommand = null;
+
+      if (command.type === COMMAND_TYPES.MOVE) {
+        legacyCommand = {
+          type:
+            command.direction === "BACKWARD"
+              ? "MOVE_BACKWARD"
+              : "MOVE_FORWARD",
+
+          distance:
+            Number(command.distance)
+        };
+      }
+
+      if (command.type === COMMAND_TYPES.TURN) {
+        legacyCommand = {
+          type:
+            command.direction === "LEFT"
+              ? "TURN_LEFT"
+              : "TURN_RIGHT",
+
+          degrees:
+            Number(command.degrees)
+        };
+      }
+
+      if (command.type === COMMAND_TYPES.CHARGE) {
+        legacyCommand = {
+          type: "GO_CHARGING"
+        };
+      }
+
+      if (command.type === COMMAND_TYPES.STOP) {
+        legacyCommand = {
+          type: "STOP"
+        };
+      }
+
+      if (!legacyCommand) {
+        return {
+          safe: false,
+          reason:
+            "Virtual Body A cannot translate this command."
+        };
+      }
+
+      const result =
+        validateRobotCommand(legacyCommand);
+
+      return {
+        safe: result.allowed === true,
+        reason: result.reason || null
+      };
+    },
+
+    async execute(body, command) {
+
+      if (command.type === COMMAND_TYPES.OBSERVE) {
+        return {
+          success: true,
+          observation: getRobotStatus()
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.REPORT_STATUS
+      ) {
+        return {
+          success: true,
+          status: getRobotStatus()
+        };
+      }
+
+      if (command.type === COMMAND_TYPES.STOP) {
+        ROBOT.emergencyStop = true;
+        ROBOT.status = "STOPPED";
+        ROBOT.charging = false;
+
+        await recordAuditEvent(
+          "EMBODIMENT_BODY_A_STOPPED",
+          {
+            command: "STOP",
+            authorizationId:
+              command.authorizationId || null
+          }
+        );
+
+        return {
+          success: true,
+          stopped: true
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.MOVE
+      ) {
+        const direction =
+          command.direction === "BACKWARD"
+            ? "BACKWARD"
+            : "FORWARD";
+
+        return simulateMove(
+          direction,
+          Number(command.distance),
+          command.authorizationId
+        );
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.TURN
+      ) {
+        const direction =
+          command.direction === "LEFT"
+            ? "LEFT"
+            : "RIGHT";
+
+        return simulateTurn(
+          direction,
+          Number(command.degrees),
+          command.authorizationId
+        );
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.CHARGE
+      ) {
+        return simulateCharging(
+          command.authorizationId
+        );
+      }
+
+      return {
+        success: false,
+        reason:
+          "Virtual Body A does not implement this command."
+      };
+    },
+
+    async observe() {
+      return getRobotStatus();
+    },
+
+    async getStatus() {
+      return getRobotStatus();
+    }
+  });
+
+
+/*
+ * Register Body A with the shared embodiment interface.
+ */
+
+embodimentInterface.registerBody(
+  virtualBodyA
+);
+
+console.log(
+  `[EMBODIMENT] Registered ${virtualBodyA.name}`
+);
+/* ======================================================
    ROBOT EXECUTION
 ====================================================== */
 
