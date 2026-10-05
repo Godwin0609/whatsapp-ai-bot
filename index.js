@@ -2782,6 +2782,25 @@ const server =
             }
           );
         }
+                /* ----------------------------------------------
+           EMBODIMENT BODY A STATUS
+        ---------------------------------------------- */
+
+        if (
+          req.method === "GET" &&
+          path === "/embodiment/body-a/status"
+        ) {
+          const status =
+            await embodimentInterface.getStatus(
+              "silent-strategist-robot-01"
+            );
+
+          return sendJSON(
+            res,
+            status.success ? 200 : 404,
+            status
+          );
+        }
 
         /* ----------------------------------------------
            ROBOT STATUS
