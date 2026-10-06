@@ -1460,6 +1460,252 @@ console.log(
   `[EMBODIMENT] Registered ${virtualBodyA.name}`
 );
 /* ======================================================
+   VIRTUAL BODY B
+   SIMULATED MANIPULATOR EMBODIMENT
+====================================================== */
+
+const VIRTUAL_BODY_B_ID =
+  "silent-strategist-manipulator-01";
+
+const virtualBodyB =
+  createVirtualBody({
+    id: VIRTUAL_BODY_B_ID,
+
+    name:
+      "Silent Strategist Virtual Manipulator",
+
+    type:
+      "virtual-manipulator",
+
+    capabilities: [
+      CAPABILITIES.OBSERVE,
+      CAPABILITIES.STOP,
+      CAPABILITIES.GRASP,
+      CAPABILITIES.LIFT,
+      CAPABILITIES.LOWER,
+      CAPABILITIES.OPEN,
+      CAPABILITIES.CLOSE,
+      CAPABILITIES.ROTATE,
+      CAPABILITIES.REPORT_STATUS
+    ],
+
+    initialState: {
+      mode: "simulation",
+      status: "IDLE",
+      gripper: "OPEN",
+      holding: null,
+      height: 0,
+      rotation: 0
+    },
+
+    safetyCheck(body, command) {
+
+      if (
+        command.type ===
+        COMMAND_TYPES.LIFT
+      ) {
+        if (Number(command.height) < 0) {
+          return {
+            safe: false,
+            reason:
+              "Lift height cannot be negative."
+          };
+        }
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.LOWER
+      ) {
+        if (Number(command.height) < 0) {
+          return {
+            safe: false,
+            reason:
+              "Lower height cannot be negative."
+          };
+        }
+      }
+
+      return {
+        safe: true,
+        reason: null
+      };
+    },
+
+    async execute(body, command) {
+
+      if (
+        command.type ===
+        COMMAND_TYPES.OBSERVE
+      ) {
+        return {
+          success: true,
+          observation: {
+            ...body.state
+          }
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.REPORT_STATUS
+      ) {
+        return {
+          success: true,
+          status: {
+            ...body.state
+          }
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.STOP
+      ) {
+        body.state.status = "STOPPED";
+
+        return {
+          success: true,
+          stopped: true
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.GRASP
+      ) {
+        body.state.gripper = "CLOSED";
+        body.state.holding =
+          command.objectId;
+
+        body.state.status =
+          "HOLDING";
+
+        return {
+          success: true,
+          action: "GRASP",
+          objectId:
+            command.objectId
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.LIFT
+      ) {
+        body.state.height =
+          Number(command.height);
+
+        body.state.status =
+          "LIFTING";
+
+        return {
+          success: true,
+          action: "LIFT",
+          height:
+            body.state.height
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.LOWER
+      ) {
+        body.state.height =
+          Number(command.height);
+
+        body.state.status =
+          "LOWERED";
+
+        return {
+          success: true,
+          action: "LOWER",
+          height:
+            body.state.height
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.OPEN
+      ) {
+        body.state.gripper =
+          "OPEN";
+
+        body.state.holding =
+          null;
+
+        body.state.status =
+          "IDLE";
+
+        return {
+          success: true,
+          action: "OPEN"
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.CLOSE
+      ) {
+        body.state.gripper =
+          "CLOSED";
+
+        return {
+          success: true,
+          action: "CLOSE"
+        };
+      }
+
+      if (
+        command.type ===
+        COMMAND_TYPES.ROTATE
+      ) {
+        body.state.rotation =
+          Number(command.degrees);
+
+        return {
+          success: true,
+          action: "ROTATE",
+          degrees:
+            body.state.rotation
+        };
+      }
+
+      return {
+        success: false,
+        reason:
+          "Virtual Body B does not implement this command."
+      };
+    },
+
+    async observe() {
+      return {
+        ...this.state
+      };
+    },
+
+    async getStatus() {
+      return {
+        ...this.state
+      };
+    }
+  });
+
+
+/*
+ * Register Body B with the shared embodiment interface.
+ */
+
+embodimentInterface.registerBody(
+  virtualBodyB
+);
+
+console.log(
+  `[EMBODIMENT] Registered ${virtualBodyB.name}`
+);
+
+/* ======================================================
    ROBOT EXECUTION
 ====================================================== */
 
