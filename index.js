@@ -2123,6 +2123,10 @@ async function handleControlCommand(
       "STOPPED";
 
     ROBOT.charging = false;
+       
+    await embodimentInterface.activateEmergencyStop(
+      "Admin emergency stop."
+    );
 
     for (
       const authorizationId of
@@ -2174,6 +2178,8 @@ async function handleControlCommand(
     ) {
       ROBOT.status = "IDLE";
     }
+   
+      embodimentInterface.resetEmergencyStop();
 
     const auditId =
       await recordAuditEvent(
