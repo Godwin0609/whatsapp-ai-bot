@@ -42,14 +42,36 @@ const CAPABILITIES = Object.freeze({
   LISTEN: "LISTEN",
   REPORT_STATUS: "REPORT_STATUS",
 
-  // Future capabilities
   NAVIGATE_TO: "NAVIGATE_TO",
   PICK_UP: "PICK_UP",
   RELEASE: "RELEASE",
   LOOK_AT: "LOOK_AT",
   FOLLOW: "FOLLOW",
   DOCK: "DOCK",
-  CHARGE: "CHARGE"
+  CHARGE: "CHARGE",
+
+  GRASP: "GRASP",
+  ROTATE: "ROTATE",
+  LIFT: "LIFT",
+  LOWER: "LOWER",
+  OPEN: "OPEN",
+  CLOSE: "CLOSE",
+  POINT: "POINT",
+  TRACK: "TRACK",
+  SCAN: "SCAN",
+  IDENTIFY: "IDENTIFY",
+  MEASURE: "MEASURE",
+  WAIT: "WAIT",
+  SEARCH: "SEARCH",
+  APPROACH: "APPROACH",
+  AVOID: "AVOID",
+  RETURN_HOME: "RETURN_HOME",
+  SET_SPEED: "SET_SPEED",
+  SET_DIRECTION: "SET_DIRECTION",
+  PLAY_SOUND: "PLAY_SOUND",
+  DISPLAY: "DISPLAY",
+  TAKE_PHOTO: "TAKE_PHOTO",
+  RECORD_AUDIO: "RECORD_AUDIO"
 });
 
 
@@ -73,7 +95,159 @@ const COMMAND_TYPES = Object.freeze({
   LOOK_AT: "LOOK_AT",
   FOLLOW: "FOLLOW",
   DOCK: "DOCK",
-  CHARGE: "CHARGE"
+  CHARGE: "CHARGE",
+
+  GRASP: "GRASP",
+  ROTATE: "ROTATE",
+  LIFT: "LIFT",
+  LOWER: "LOWER",
+  OPEN: "OPEN",
+  CLOSE: "CLOSE",
+  POINT: "POINT",
+  TRACK: "TRACK",
+  SCAN: "SCAN",
+  IDENTIFY: "IDENTIFY",
+  MEASURE: "MEASURE",
+  WAIT: "WAIT",
+  SEARCH: "SEARCH",
+  APPROACH: "APPROACH",
+  AVOID: "AVOID",
+  RETURN_HOME: "RETURN_HOME",
+  SET_SPEED: "SET_SPEED",
+  SET_DIRECTION: "SET_DIRECTION",
+  PLAY_SOUND: "PLAY_SOUND",
+  DISPLAY: "DISPLAY",
+  TAKE_PHOTO: "TAKE_PHOTO",
+  RECORD_AUDIO: "RECORD_AUDIO"
+});
+
+const COMMAND_PARAMETERS = Object.freeze({
+
+  OBSERVE: [],
+
+  MOVE: [
+    "direction",
+    "distance"
+  ],
+
+  STOP: [],
+
+  TURN: [
+    "direction",
+    "degrees"
+  ],
+
+  SPEAK: [
+    "text"
+  ],
+
+  LISTEN: [],
+
+  REPORT_STATUS: [],
+
+  NAVIGATE_TO: [
+    "x",
+    "y"
+  ],
+
+  PICK_UP: [
+    "objectId"
+  ],
+
+  RELEASE: [],
+
+  LOOK_AT: [
+    "target"
+  ],
+
+  FOLLOW: [
+    "target"
+  ],
+
+  DOCK: [],
+
+  CHARGE: [],
+
+  GRASP: [
+    "objectId"
+  ],
+
+  ROTATE: [
+    "degrees"
+  ],
+
+  LIFT: [
+    "height"
+  ],
+
+  LOWER: [
+    "height"
+  ],
+
+  OPEN: [],
+
+  CLOSE: [],
+
+  POINT: [
+    "target"
+  ],
+
+  TRACK: [
+    "target"
+  ],
+
+  SCAN: [
+    "area"
+  ],
+
+  IDENTIFY: [
+    "target"
+  ],
+
+  MEASURE: [
+    "target",
+    "measurement"
+  ],
+
+  WAIT: [
+    "duration"
+  ],
+
+  SEARCH: [
+    "target"
+  ],
+
+  APPROACH: [
+    "target"
+  ],
+
+  AVOID: [
+    "target"
+  ],
+
+  RETURN_HOME: [],
+
+  SET_SPEED: [
+    "speed"
+  ],
+
+  SET_DIRECTION: [
+    "direction"
+  ],
+
+  PLAY_SOUND: [
+    "sound"
+  ],
+
+  DISPLAY: [
+    "content"
+  ],
+
+  TAKE_PHOTO: [],
+
+  RECORD_AUDIO: [
+    "duration"
+  ]
 });
 
 
@@ -174,12 +348,54 @@ function validateCommand(command) {
     };
   }
 
+  /*
+   * ----------------------------------------------------------
+   * COMMAND PARAMETERS
+   * ----------------------------------------------------------
+   */
+
+const parameterDefinition =
+    COMMAND_PARAMETERS[command.type] || [];
+
+const requiredParameters =
+    parameterDefinition.required || [];
+
+const parameterTypes =
+    parameterDefinition.types || {};
+
+for (const parameter of requiredParameters) {
+
+  if (
+    command[parameter] === undefined ||
+    command[parameter] === null
+  ) {
+    return {
+      valid: false,
+      reason:
+        `Missing required parameter: ${parameter}`
+    };
+  }
+
+  const expectedType =
+    parameterTypes[parameter];
+
+  if (
+    expectedType &&
+    typeof command[parameter] !== expectedType
+  ) {
+    return {
+      valid: false,
+      reason:
+        `Parameter ${parameter} must be a ${expectedType}.`
+    };
+  }
+}
+
   return {
     valid: true,
     reason: null
   };
 }
-
 
 /*
  * ============================================================
@@ -800,6 +1016,7 @@ module.exports = {
   EMBODIMENT_INTERFACE_VERSION,
   CAPABILITIES,
   COMMAND_TYPES,
+  COMMAND_PARAMETERS,
   EmbodimentRegistry,
   EmbodimentInterface,
   createVirtualBody,
