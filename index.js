@@ -1662,17 +1662,8 @@ async function consumeControllerGrantAndExecute(
     };
   }
 
-  /*
-  Mark consumed BEFORE execution.
-  This prevents replay if the same grant is
-  submitted more than once.
-  */
-
   grant.consumed = true;
-
-  controllerGrants.delete(
-    grantId
-  );
+  controllerGrants.delete(grantId);
 
   await recordAuditEvent(
     "ROBOT_CONTROLLER_GRANT_CONSUMED",
@@ -1685,12 +1676,12 @@ async function consumeControllerGrantAndExecute(
     }
   );
 
-  const command =
+  const legacyCommand =
     parseRobotCommand(
       grant.command
     );
 
-  if (!command) {
+  if (!legacyCommand) {
     return {
       success: false,
       reason:
@@ -1698,10 +1689,158 @@ async function consumeControllerGrantAndExecute(
     };
   }
 
-  return executeRobotCommand(
-    command,
-    grant.authorizationId
+  let embodimentCommand = null;
+
+  if (
+    legacyCommand.type ===
+    "MOVE_FORWARD"
+  ) {
+    embodimentCommand = {
+      type:
+        COMMAND_TYPES.MOVE,
+      bodyId:
+        VIRTUAL_BODY_A_ID,
+      direction:
+        "FORWARD",
+      distance:
+        legacyCommand.distance
+    };
+  }
+
+  if (
+    legacyCommand.type ===
+    "MOVE_BACKWARD"
+  ) {
+    embodimentCommand = {
+      type:
+        COMMAND_TYPES.MOVE,
+      bodyId:
+        VIRTUAL_BODY_A_ID,
+      direction:
+        "BACKWARD",
+      distance:
+        legacyCommand.distance
+    };
+  }
+
+  if (
+    legacyCommand.type ===
+    "TURN_LEFT"
+  ) {
+    embodimentCommand = {
+      type:
+        COMMAND_TYPES.TURN,
+      bodyId:
+        VIRTUAL_BODY_A_ID,
+      direction:
+        "LEFT",
+      degrees:
+        legacyCommand.degrees
+    };
+  }
+
+  if (
+    legacyCommand.type ===
+    "TURN_RIGHT"
+  ) {
+    embodimentCommand = {
+      type:
+        COMMAND_TYPES.TURN,
+      bodyId:
+        VIRTUAL_BODY_A_ID,
+      direction:
+        "RIGHT",
+      degrees:
+        legacyCommand.degrees
+    };
+  }
+
+  if (
+    legacyCommand.type ===
+    "GO_CHARGING"
+  ) {
+    embodimentCommand = {
+      type:
+        COMMAND_TYPES.CHARGE,
+      bodyId:
+        VIRTUAL_BODY_A_ID
+    };
+  }
+
+  if (
+    legacyCommand.type ===
+    "STOP"
+  ) {
+    embodimentCommand = {
+      type:
+        COMMAND_TYPES.STOP,
+      bodyId:
+        VIRTUAL_BODY_A_ID
+    };
+  }
+
+  if (!embodimentCommand) {
+    return {
+      success: false,
+      reason:
+        `Command ${legacyCommand.type} is not yet connected to the embodiment interface.`
+    };
+  }
+
+  ROBOT.lastAuthorizationId =
+    grant.authorizationId;
+
+  const result =
+    await embodimentInterface.sendCommand(
+      embodimentCommand,
+      {
+        approved: true,
+        authorizationId:
+          grant.authorizationId
+      }
+    );
+
+  await recordAuditEvent(
+    result.success
+      ? "EMBODIMENT_COMMAND_COMPLETED"
+      : "EMBODIMENT_COMMAND_FAILED",
+    {
+      grantId,
+      authorizationId:
+        grant.authorizationId,
+      command:
+        grant.command,
+      bodyId:
+        VIRTUAL_BODY_A_ID,
+      embodimentCommand,
+      result
+    }
   );
+
+  return {
+    success:
+      result.success === true,
+
+    reason:
+      result.success
+        ? null
+        : (
+            result.result?.reason ||
+            result.error ||
+            "Embodiment execution failed."
+          ),
+
+    bodyId:
+      result.bodyId ||
+      VIRTUAL_BODY_A_ID,
+
+    command:
+      result.command ||
+      embodimentCommand.type,
+
+    result:
+      result.result || result
+  };
     }
 /* ======================================================
    ROBOT HELP
