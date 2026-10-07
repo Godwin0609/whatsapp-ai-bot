@@ -749,7 +749,18 @@ function parseRobotCommand(text) {
       raw: normalized
     };
   }
+  match =
+    normalized.match(
+      /^ROBOT GRASP (.+)$/
+    );
 
+  if (match) {
+    return {
+      type: "GRASP",
+      objectId: match[1],
+      raw: normalized
+    };
+  }
   return null;
 }
 
@@ -2033,6 +2044,28 @@ async function consumeControllerGrantAndExecute(
     };
   }
 
+    if (
+    legacyCommand.type ===
+    "GRASP"
+  ) {
+    embodimentCommand = {
+      type:
+        COMMAND_TYPES.GRASP,
+      bodyId:
+        VIRTUAL_BODY_B_ID,
+      objectId:
+        legacyCommand.objectId
+    };
+  }
+
+  if (!embodimentCommand) {
+    return {
+      success: false,
+      reason:
+        `Command ${legacyCommand.type} is not yet connected to the embodiment interface.`
+    };
+  }
+
   ROBOT.lastAuthorizationId =
     grant.authorizationId;
 
@@ -2077,8 +2110,8 @@ async function consumeControllerGrantAndExecute(
           ),
 
     bodyId:
-      result.bodyId ||
-      VIRTUAL_BODY_A_ID,
+  result.bodyId ||
+  embodimentCommand.bodyId,
 
     command:
       result.command ||
