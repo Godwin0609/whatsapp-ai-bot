@@ -868,7 +868,22 @@ function validateRobotCommand(
       return {
         allowed: true
       };
+    case "GRASP":
+      if (
+        !command.objectId ||
+        typeof command.objectId !== "string"
+      ) {
+        return {
+          allowed: false,
+          reason:
+            "GRASP requires a valid object ID."
+        };
+      }
 
+      return {
+        allowed: true
+      };
+      
     default:
       return {
         allowed: false,
