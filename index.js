@@ -2051,16 +2051,8 @@ async function consumeControllerGrantAndExecute(
     };
   }
 
-  if (!embodimentCommand) {
-    return {
-      success: false,
-      reason:
-        `Command ${legacyCommand.type} is not yet connected to the embodiment interface.`
-    };
-  }
-
-    if (
-    legacyCommand.type ===
+if (
+  legacyCommand.type ===
     "GRASP"
   ) {
     embodimentCommand = {
