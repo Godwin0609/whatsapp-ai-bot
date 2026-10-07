@@ -262,14 +262,71 @@ async function initializeDatabase() {
       ON audit_events(timestamp);
     `);
 
-    await client.query(`
+        await client.query(`
       CREATE INDEX IF NOT EXISTS idx_audit_events_type
       ON audit_events(event_type);
     `);
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS channel_content (
+        id BIGSERIAL PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        published_at TIMESTAMPTZ,
+        content_type TEXT NOT NULL DEFAULT 'post',
+        title TEXT,
+        message TEXT,
+        image_url TEXT,
+        visual_prompt TEXT,
+        theme TEXT,
+        series TEXT,
+        sequence_number INTEGER,
+        status TEXT NOT NULL DEFAULT 'draft',
+        source TEXT NOT NULL DEFAULT 'user',
+        metadata JSONB DEFAULT '{}'::jsonb
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS channel_state (
+        channel_id TEXT PRIMARY KEY,
+        current_series TEXT,
+        current_theme TEXT,
+        last_content_id BIGINT,
+        next_sequence_number INTEGER NOT NULL DEFAULT 1,
+        continuity_notes TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS channel_craft_memory (
+        id BIGSERIAL PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        memory_type TEXT NOT NULL,
+        memory_key TEXT NOT NULL,
+        memory_value TEXT NOT NULL,
+        source_content_id BIGINT,
+        confidence NUMERIC(4,3),
+        metadata JSONB DEFAULT '{}'::jsonb
+      );
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_channel_content_series
+      ON channel_content(series);
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_channel_content_theme
+      ON channel_content(theme);
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_channel_craft_memory_type
+      ON channel_craft_memory(memory_type);
+    `);
+
     console.log("[DATABASE] PostgreSQL connected.");
-  } finally {
-    client.release();
   }
 }
 
