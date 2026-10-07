@@ -1679,17 +1679,17 @@ const virtualBodyB =
       };
     },
 
-    async observe() {
-      return {
-        ...this.state
-      };
-    },
+    async observe(body) {
+  return {
+    ...body.state
+  };
+},
 
-    async getStatus() {
-      return {
-        ...this.state
-      };
-    }
+async getStatus(body) {
+  return {
+    ...body.state
+  };
+}
   });
 
 
