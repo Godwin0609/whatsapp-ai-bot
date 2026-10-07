@@ -3240,18 +3240,48 @@ async function processMessage(
     return "Robot command received.";
           }
   /* --------------------------------------------------
-     GENERAL AI
-  -------------------------------------------------- */
+   GENERAL AI
+-------------------------------------------------- */
 
-  const response =
-    await askOpenAI(
-      sender,
-      text
-    );
+const channelContinuity =
+  await getChannelContinuity("main");
 
-  return verifyAIResponse(
-    response
+const continuityContext = [
+  "CHANNEL CONTINUITY",
+  "",
+  `Current Series: ${
+    channelContinuity.state.current_series || "None"
+  }`,
+  `Current Theme: ${
+    channelContinuity.state.current_theme || "None"
+  }`,
+  `Next Sequence Number: ${
+    channelContinuity.state.next_sequence_number
+  }`,
+  `Continuity Notes: ${
+    channelContinuity.state.continuity_notes || "None"
+  }`,
+  "",
+  "Recent Channel Content:",
+  ...channelContinuity.recentContent.map(
+    (content) =>
+      `- [${content.sequence_number || "N/A"}] ${
+        content.title || ""
+      } ${
+        content.message || ""
+      }`
+  )
+].join("\n");
+
+const response =
+  await askOpenAI(
+    sender,
+    `${continuityContext}\n\nUSER MESSAGE:\n${text}`
   );
+
+return verifyAIResponse(
+  response
+);
 }
 
 /* ======================================================
