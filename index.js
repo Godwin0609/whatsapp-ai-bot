@@ -403,6 +403,221 @@ async function recordAuditEvent(
 }
 
 /* ======================================================
+   CHANNEL CONTENT STORAGE
+====================================================== */
+
+async function saveChannelContent({
+  contentType = "post",
+  title = null,
+  message = null,
+  imageUrl = null,
+  visualPrompt = null,
+  theme = null,
+  series = null,
+  sequenceNumber = null,
+  status = "draft",
+  source = "user",
+  metadata = {}
+}) {
+  if (!pool) {
+    throw new Error(
+      "Database pool is not available."
+    );
+  }
+
+  const result = await pool.query(
+    `
+    INSERT INTO channel_content
+    (
+      content_type,
+      title,
+      message,
+      image_url,
+      visual_prompt,
+      theme,
+      series,
+      sequence_number,
+      status,
+      source,
+      metadata
+    )
+    VALUES
+    (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
+      $9,
+      $10,
+      $11
+    )
+    RETURNING *;
+    `,
+    [
+      contentType,
+      title,
+      message,
+      imageUrl,
+      visualPrompt,
+      theme,
+      series,
+      sequenceNumber,
+      status,
+      source,
+      JSON.stringify(metadata)
+    ]
+  );
+
+  return result.rows[0];
+}
+
+
+/* ======================================================
+   CHANNEL STATE
+====================================================== */
+
+async function getChannelState(
+  channelId
+) {
+  if (!pool) {
+    throw new Error(
+      "Database pool is not available."
+    );
+  }
+
+  const result = await pool.query(
+    `
+    SELECT *
+    FROM channel_state
+    WHERE channel_id = $1;
+    `,
+    [channelId]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+async function saveChannelState({
+  channelId,
+  currentSeries = null,
+  currentTheme = null,
+  lastContentId = null,
+  nextSequenceNumber = 1,
+  continuityNotes = null
+}) {
+  if (!pool) {
+    throw new Error(
+      "Database pool is not available."
+    );
+  }
+
+  const result = await pool.query(
+    `
+    INSERT INTO channel_state
+    (
+      channel_id,
+      current_series,
+      current_theme,
+      last_content_id,
+      next_sequence_number,
+      continuity_notes,
+      updated_at
+    )
+    VALUES
+    (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      NOW()
+    )
+    ON CONFLICT (channel_id)
+    DO UPDATE SET
+      current_series = EXCLUDED.current_series,
+      current_theme = EXCLUDED.current_theme,
+      last_content_id = EXCLUDED.last_content_id,
+      next_sequence_number =
+        EXCLUDED.next_sequence_number,
+      continuity_notes =
+        EXCLUDED.continuity_notes,
+      updated_at = NOW()
+    RETURNING *;
+    `,
+    [
+      channelId,
+      currentSeries,
+      currentTheme,
+      lastContentId,
+      nextSequenceNumber,
+      continuityNotes
+    ]
+  );
+
+  return result.rows[0];
+}
+
+
+/* ======================================================
+   CHANNEL CRAFT MEMORY
+====================================================== */
+
+async function saveChannelCraftMemory({
+  memoryType,
+  memoryKey,
+  memoryValue,
+  sourceContentId = null,
+  confidence = null,
+  metadata = {}
+}) {
+  if (!pool) {
+    throw new Error(
+      "Database pool is not available."
+    );
+  }
+
+  const result = await pool.query(
+    `
+    INSERT INTO channel_craft_memory
+    (
+      memory_type,
+      memory_key,
+      memory_value,
+      source_content_id,
+      confidence,
+      metadata
+    )
+    VALUES
+    (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6
+    )
+    RETURNING *;
+    `,
+    [
+      memoryType,
+      memoryKey,
+      memoryValue,
+      sourceContentId,
+      confidence,
+      JSON.stringify(metadata)
+    ]
+  );
+
+  return result.rows[0];
+}
+
+/* ======================================================
    BASIC HELPERS
 ====================================================== */
 
