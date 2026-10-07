@@ -326,7 +326,10 @@ async function initializeDatabase() {
       ON channel_craft_memory(memory_type);
     `);
 
-    console.log("[DATABASE] PostgreSQL connected.");
+        console.log("[DATABASE] PostgreSQL connected.");
+  } catch (error) {
+    console.error("[DATABASE] PostgreSQL initialization failed:", error);
+    throw error;
   }
 }
 
