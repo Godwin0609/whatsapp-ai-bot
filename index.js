@@ -3193,6 +3193,26 @@ const server =
           );
         }
 
+                /* ----------------------------------------------
+           EMBODIMENT BODY B STATUS
+        ---------------------------------------------- */
+
+        if (
+          req.method === "GET" &&
+          path === "/embodiment/body-b/status"
+        ) {
+          const status =
+            await embodimentInterface.getStatus(
+              "silent-strategist-manipulator-01"
+            );
+
+          return sendJSON(
+            res,
+            status.success ? 200 : 404,
+            status
+          );
+      }
+
         /* ----------------------------------------------
            ROBOT STATUS
         ---------------------------------------------- */
