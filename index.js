@@ -618,6 +618,125 @@ async function saveChannelCraftMemory({
 }
 
 /* ======================================================
+   CHANNEL CONTINUITY
+====================================================== */
+
+async function getOrCreateChannelState(
+  channelId = "main"
+) {
+  let state =
+    await getChannelState(channelId);
+
+  if (!state) {
+    state = await saveChannelState({
+      channelId,
+      currentSeries: null,
+      currentTheme: null,
+      lastContentId: null,
+      nextSequenceNumber: 1,
+      continuityNotes: null
+    });
+  }
+
+  return state;
+}
+
+
+async function updateChannelProgress({
+  channelId = "main",
+  contentId = null,
+  series = null,
+  theme = null,
+  nextSequenceNumber = null,
+  continuityNotes = null
+}) {
+  const currentState =
+    await getOrCreateChannelState(channelId);
+
+  return saveChannelState({
+    channelId,
+    currentSeries:
+      series !== null
+        ? series
+        : currentState.current_series,
+    currentTheme:
+      theme !== null
+        ? theme
+        : currentState.current_theme,
+    lastContentId:
+      contentId !== null
+        ? contentId
+        : currentState.last_content_id,
+    nextSequenceNumber:
+      nextSequenceNumber !== null
+        ? nextSequenceNumber
+        : currentState.next_sequence_number,
+    continuityNotes:
+      continuityNotes !== null
+        ? continuityNotes
+        : currentState.continuity_notes
+  });
+}
+
+
+async function getLatestChannelContent({
+  series = null,
+  theme = null,
+  limit = 10
+} = {}) {
+  if (!pool) {
+    throw new Error(
+      "Database pool is not available."
+    );
+  }
+
+  const result = await pool.query(
+    `
+    SELECT *
+    FROM channel_content
+    WHERE
+      ($1::TEXT IS NULL OR series = $1)
+      AND
+      ($2::TEXT IS NULL OR theme = $2)
+    ORDER BY created_at DESC
+    LIMIT $3;
+    `,
+    [
+      series,
+      theme,
+      Math.max(1, Math.min(100, Number(limit) || 10))
+    ]
+  );
+
+  return result.rows;
+}
+
+
+/* ======================================================
+   CHANNEL CONTINUITY SNAPSHOT
+====================================================== */
+
+async function getChannelContinuity(
+  channelId = "main"
+) {
+  const state =
+    await getOrCreateChannelState(channelId);
+
+  const recentContent =
+    await getLatestChannelContent({
+      series: state.current_series,
+      theme: state.current_theme,
+      limit: 10
+    });
+
+  return {
+    channelId,
+    state,
+    recentContent
+  };
+      }
+
+/* ======================================================
    BASIC HELPERS
 ====================================================== */
 
